@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.4 - picture inventory, larger window, readable sidebar
+-- AIOS HUB / Pixel Lineage 0.6 - larger panel, readable navigation, lightweight inventory
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -89,8 +89,7 @@ return function(deps)
                     local definition=(config.Items or{})[id]or(gear.Items or{})[id]or{}
                     rows[#rows+1]={id=tostring(id),name=tostring(definition.name or id),
                         kind="item",quantity=count,rarity=tostring(definition.rarity or""),
-                        category=tostring(definition.type or definition.kind or"Item"),
-                        art=deps.art and deps.art(definition)or nil}
+                        category=tostring(definition.type or definition.kind or"Item")}
                     itemKinds=itemKinds+1
                     itemTotal=itemTotal+count
                 end
@@ -111,8 +110,7 @@ return function(deps)
                     kind="gear",quantity=1,equipped=worn,locked=piece.locked==true or described.locked==true,
                     rarity=tostring(described.rarity or definition.rarity or""),
                     tier=tonumber(described.tier or definition.tier),
-                    category=tostring(described.gearKind or definition.gearKind or"Gear"),
-                    art=deps.art and deps.art(described,definition,piece)or nil}
+                    category=tostring(described.gearKind or definition.gearKind or"Gear")}
                 gearTotal=gearTotal+1
                 if worn then equippedTotal=equippedTotal+1 end
             end
@@ -145,260 +143,88 @@ return function(deps)
 end
 
 end)()
-    local art=(function()
--- Resolve real catalog/native-bag art. Never substitute another item's image.
-local Art={}
-local fields={"icon","Icon","image","Image","thumbnail","Thumbnail","texture","Texture",
-    "sprite","Sprite","preview","Preview","iconId","IconId","imageId","ImageId","assetId","AssetId"}
-local function asset(value)
-    if type(value)=="number"and value>0 and value<math.huge then return"rbxassetid://"..string.format("%.0f",value)end
-    if type(value)~="string"then return nil end
-    if value:match("^%d+$")and tonumber(value)>0 then return"rbxassetid://"..value end
-    if value:match("^rbxassetid://%d+$")or value:match("^rbxasset://")or value:match("^rbxthumb://")then return value end
-    if value:match("^https?://[%w%.%-]*roblox%.com/")then
-        local id=value:match("[?&]id=(%d+)")
-        if id then return"rbxassetid://"..id end
-    end
-    return nil
-end
-local function vector(value)
-    if typeof(value)=="Vector2"then return value end
-    if type(value)=="table"then
-        local x,y=tonumber(value.X or value.x or value[1]),tonumber(value.Y or value.y or value[2])
-        if x and y then return Vector2.new(x,y)end
-    end
-end
-local function from(value,depth)
-    local image=asset(value)
-    if image then return{kind="image",image=image}end
-    if type(value)=="string"and#value<=24 and value:find("[\128-\255]")then
-        return{kind="glyph",text=value}
-    end
-    if type(value)~="table"or depth>3 then return nil end
-    for _,field in ipairs(fields)do
-        local art=from(rawget(value,field),depth+1)
-        if art then
-            art.offset=vector(value.ImageRectOffset or value.imageRectOffset or value.rectOffset or value.offset)or art.offset
-            art.size=vector(value.ImageRectSize or value.imageRectSize or value.rectSize or value.size)or art.size
-            return art
-        end
-    end
-end
-function Art.From(...)
-    for i=1,select("#",...)do
-        local result=from(select(i,...),0)
-        if result then return result end
-    end
-end
-local function key(value)
-    return tostring(value or""):gsub("<[^>]*>",""):gsub("%s+[x×]%s*%d+$",""):match("^%s*(.-)%s*$"):lower()
-end
-function Art.Index(gui)
-    local index={}
-    if not gui then return index end
-    local function add(value,node)
-        local name=key(value)
-        if name==""then return end
-        index[name]=index[name]or{}
-        table.insert(index[name],node)
-    end
-    for _,node in ipairs(gui:GetDescendants())do
-        if node:IsA("GuiObject")then
-            add(node.Name,node)
-            if node:IsA("TextLabel")or node:IsA("TextButton")then add(node.Text,node)end
-            for _,name in ipairs({"ItemId","itemId","GearUid","gearUid","UID","uid","BaseId","baseId"})do
-                local value=node:GetAttribute(name)
-                if type(value)=="string"or type(value)=="number"then add(value,node)end
-            end
-        end
-    end
-    return index
-end
-local function visual(anchor)
-    local function image(node)
-        if(node:IsA("ImageLabel")or node:IsA("ImageButton"))and node.Image~=""then return node end
-        if node:IsA("ViewportFrame")and node.CurrentCamera then return node end
-    end
-    local nodes={anchor}
-    for _,node in ipairs(anchor:GetDescendants())do nodes[#nodes+1]=node end
-    -- Named icon containers also support the game's pixel art made of Frames.
-    for _,node in ipairs(nodes)do
-        local name=node.Name:lower()
-        if name:find("icon",1,true)or name:find("sprite",1,true)or name=="art"or name=="preview"or name=="thumbnail"then
-            if image(node)then return node end
-            if node:IsA("Frame")and#node:GetChildren()>0 and#node:GetDescendants()<=300 then return node end
-        end
-    end
-    for _,node in ipairs(nodes)do if image(node)then return node end end
-end
-function Art.Find(row,index,gui)
-    for _,identity in ipairs({row.uid or"",row.id,row.name})do
-        for _,anchor in ipairs(index[key(identity)]or{})do
-            local node=anchor
-            for _=1,3 do
-                if not node or node==gui or not node:IsA("GuiObject")then break end
-                -- Do not search an entire bag/list when one matched item has no art.
-                if node~=anchor and(node:IsA("ScrollingFrame")or node:FindFirstChildOfClass("UIGridLayout")
-                    or node:FindFirstChildOfClass("UIListLayout")and#node:GetChildren()>8)then break end
-                local found=visual(node)
-                if found then return found end
-                node=node.Parent
-            end
-        end
-    end
-end
-function Art.Mount(window,owner,parent,row,index,gui,extent)
-    extent=extent or 64
-    local function create(class,props,theme)return window:Create(class,props,theme)end
-    local art=row.art
-    local native=Art.Find(row,index,gui)
-    local function mountImage(properties)
-        local pending=create("TextLabel",{Name="PreviewPending",Text="…",FontFace=window.theme.Font,
-            TextSize=22,TextColor3=Color3.fromRGB(143,156,178),Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=parent})
-        properties.Name="ItemImage"
-        properties.BackgroundTransparency=1
-        properties.Size=UDim2.fromScale(1,1)
-        properties.ScaleType=Enum.ScaleType.Fit
-        properties.ResampleMode=properties.ResampleMode or Enum.ResamplerMode.Pixelated
-        properties.Parent=parent
-        local image=create("ImageLabel",properties)
-        local function loaded()if image.IsLoaded then pending.Visible=false end end
-        window:ConnectFor(owner,image:GetPropertyChangedSignal("IsLoaded"),loaded)
-        loaded()
-        return true
-    end
-    if art and art.kind=="image"then
-        return mountImage({Image=art.image,ImageRectOffset=art.offset or Vector2.new(0,0),ImageRectSize=art.size or Vector2.new(0,0)})
-    end
-    if native and(native:IsA("ImageLabel")or native:IsA("ImageButton"))then
-        return mountImage({Image=native.Image,ImageRectOffset=native.ImageRectOffset,ImageRectSize=native.ImageRectSize,
-            ImageColor3=native.ImageColor3,ResampleMode=native.ResampleMode})
-    end
-    if native then
-        local ok,clone=pcall(native.Clone,native)
-        if ok and clone then
-            for _,child in ipairs(clone:GetDescendants())do
-                if child:IsA("LuaSourceContainer")then child:Destroy()
-                elseif child:IsA("GuiButton")then child.Active=false;child.AutoButtonColor=false end
-            end
-            if clone:IsA("ViewportFrame")and native.CurrentCamera then
-                local camera=create("Camera",{CFrame=native.CurrentCamera.CFrame,FieldOfView=native.CurrentCamera.FieldOfView,Parent=clone})
-                clone.CurrentCamera=camera
-            end
-            local width=native.Size.X.Scale==0 and native.Size.X.Offset or native.AbsoluteSize.X
-            local height=native.Size.Y.Scale==0 and native.Size.Y.Offset or native.AbsoluteSize.Y
-            width=width>0 and width or extent;height=height>0 and height or extent
-            clone.Name="NativeItemPreview"
-            clone.AnchorPoint=Vector2.new(.5,.5)
-            clone.Position=UDim2.fromScale(.5,.5)
-            clone.Size=UDim2.fromOffset(width,height)
-            clone.AutomaticSize=Enum.AutomaticSize.None
-            clone.Visible=true
-            clone.Active=false
-            clone.Parent=parent
-            create("UIScale",{Scale=math.min(extent/width,extent/height),Parent=clone})
-            return true
-        end
-    end
-    if art and art.kind=="glyph"then
-        create("TextLabel",{Name="NativeItemGlyph",Text=art.text,TextSize=40,Font=Enum.Font.SourceSans,
-            BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Parent=parent})
-        return true
-    end
-    create("TextLabel",{Name="PreviewUnavailable",Text="?\nBelum tersedia",FontFace=window.theme.Font,
-        TextSize=12,TextWrapped=true,TextColor3=Color3.fromRGB(143,156,178),Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=parent})
-    return false
-end
-return Art
-
-end)()
-    local makeGallery=(function()
--- Native tab control with paginated picture cards. All actions inspect only.
-return function(window,tab,art,getGui)
-    local gallery={name="Inventory",window=window,tab=tab,cards={},forgetState=true,connections={}}
-    gallery.main=window:Create("Frame",{Name="InventoryGallery",Size=UDim2.new(1,-20,0,80),
+    local makeList=(function()
+-- Reuse a small row pool; filtering and pagination do not rebuild the UI.
+return function(window,tab)
+    local list={name="Inventory",window=window,tab=tab,pool={},rows={},forgetState=true,connections={}}
+    list.main=window:Create("Frame",{Name="InventoryList",Size=UDim2.new(1,-20,0,64),
         BackgroundTransparency=1,BorderSizePixel=0,Parent=tab.tabPage})
-    gallery.grid=window:Create("Frame",{Name="Cards",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=gallery.main})
-    gallery.layout=window:Create("UIGridLayout",{CellPadding=UDim2.fromOffset(8,8),CellSize=UDim2.new(1/3,-16/3,0,142),
-        SortOrder=Enum.SortOrder.LayoutOrder,HorizontalAlignment=Enum.HorizontalAlignment.Left,Parent=gallery.grid})
-    gallery.empty=window:Create("TextLabel",{Name="Empty",Text="Belum ada data inventory.",TextWrapped=true,
-        FontFace=window.theme.Font,TextSize=14,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Parent=gallery.main},{TextColor3="ContentColor"})
-    function gallery:_setShown(shown)self.main.Visible=shown end
-    function gallery:Reflow()
-        local scale=window.AiosScale and window.AiosScale.Scale or 1
-        local width=self.main.AbsoluteSize.X/scale
-        local columns=width>=420 and 3 or width>=260 and 2 or 1
-        self.layout.FillDirectionMaxCells=columns
-        self.layout.CellSize=UDim2.new(1/columns,-8*(columns-1)/columns,0,142)
-        local rows=math.ceil(#self.cards/columns)
-        self.main.Size=UDim2.new(1,-20,0,rows>0 and rows*142+math.max(0,rows-1)*8 or 80)
+    list.container=window:Create("Frame",{Name="Rows",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=list.main})
+    window:Create("UIListLayout",{Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder,Parent=list.container})
+    list.empty=window:Create("TextLabel",{Name="Empty",Text="Buka tab Inventory atau tekan Refresh untuk membaca item.",TextWrapped=true,
+        FontFace=window.theme.Font,TextSize=14,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Parent=list.main},{TextColor3="ContentColor"})
+    function list:_setShown(shown)self.main.Visible=shown end
+    local function details(row)
+        local lines={"Jumlah: "..tostring(row.quantity),"ID: "..row.id}
+        if row.rarity~=""then lines[#lines+1]="Rarity: "..row.rarity end
+        if row.tier then lines[#lines+1]="Tier: "..tostring(row.tier)end
+        if row.uid then lines[#lines+1]="UID: "..row.uid end
+        if row.equipped then lines[#lines+1]="Sedang dipakai"end
+        if row.locked then lines[#lines+1]="Terkunci"end
+        return table.concat(lines,"\n")
     end
-    function gallery:Clear()
-        for _,card in ipairs(self.cards)do
-            window:DisconnectMany(card,card.connections)
-            window:DestroySubtree(card.main)
-        end
-        self.cards={}
+    function list:MakeRow(order)
+        local cell={connections={}}
+        cell.main=window:Create("TextButton",{Name="ItemRow",Text="",AutoButtonColor=false,BorderSizePixel=0,
+            LayoutOrder=order,Size=UDim2.new(1,0,0,58),Parent=self.container},{BackgroundColor3="StatBackground"})
+        window:Create("UICorner",{CornerRadius=UDim.new(0,8),Parent=cell.main})
+        cell.stroke=window:Create("UIStroke",{Transparency=.7,Thickness=1,Parent=cell.main})
+        cell.name=window:Create("TextLabel",{Name="ItemName",Text="",FontFace=window.theme.Font,TextSize=14,
+            TextTruncate=Enum.TextTruncate.AtEnd,TextXAlignment=Enum.TextXAlignment.Left,Size=UDim2.new(1,-90,0,22),
+            Position=UDim2.fromOffset(10,6),BackgroundTransparency=1,Parent=cell.main},{TextColor3="ContentColor"})
+        cell.meta=window:Create("TextLabel",{Name="ItemDetails",Text="",FontFace=window.theme.Font,TextSize=12,
+            TextTruncate=Enum.TextTruncate.AtEnd,TextXAlignment=Enum.TextXAlignment.Left,Size=UDim2.new(1,-20,0,18),
+            Position=UDim2.fromOffset(10,31),BackgroundTransparency=1,Parent=cell.main})
+        cell.quantity=window:Create("TextLabel",{Name="Quantity",Text="",FontFace=window.theme.Font,TextSize=14,
+            TextXAlignment=Enum.TextXAlignment.Right,Size=UDim2.fromOffset(64,22),AnchorPoint=Vector2.new(1,0),
+            Position=UDim2.new(1,-10,0,6),BackgroundTransparency=1,Parent=cell.main},{TextColor3="ContentColor"})
+        window:ConnectFor(cell,cell.main.Activated,function()
+            local row=cell.row
+            if row then window:Popup({title=row.name,subtitle=row.category,content=details(row),dismissable=true})end
+        end)
+        self.pool[order]=cell
+        return cell
     end
-    function gallery:SetRows(rows,colors,message)
-        self:Clear()
-        local gui=getGui()
-        local index=art.Index(gui)
+    function list:SetRows(rows,colors,message)
+        self.rows=rows
         self.empty.Visible=#rows==0
         self.empty.Text=message or"Tidak ada item yang cocok dengan pencarian/filter ini."
-        self.grid.Visible=#rows>0
+        self.container.Visible=#rows>0
         for order,row in ipairs(rows)do
+            local cell=self.pool[order]or self:MakeRow(order)
             local color=row.equipped and Color3.fromRGB(126,219,169)or colors[row.rarity]or window.theme.ContentColor
-            local card={connections={},row=row}
-            card.main=window:Create("TextButton",{Name="ItemCard",Text="",AutoButtonColor=false,BorderSizePixel=0,
-                LayoutOrder=order,Size=UDim2.fromOffset(150,142),Parent=self.grid},{BackgroundColor3="StatBackground"})
-            window:Create("UICorner",{CornerRadius=UDim.new(0,10),Parent=card.main})
-            window:Create("UIStroke",{Color=color,Transparency=.6,Thickness=1,Parent=card.main})
-            local preview=window:Create("Frame",{Name="Preview",Size=UDim2.fromOffset(64,64),
-                Position=UDim2.new(.5,0,0,12),AnchorPoint=Vector2.new(.5,0),BackgroundTransparency=1,ClipsDescendants=true,Parent=card.main})
-            card.hasArt=art.Mount(window,card,preview,row,index,gui,64)
-            window:Create("TextLabel",{Name="ItemName",Text=row.name,TextWrapped=true,TextTruncate=Enum.TextTruncate.AtEnd,
-                FontFace=window.theme.Font,TextSize=14,Size=UDim2.new(1,-16,0,34),Position=UDim2.new(0,8,0,79),
-                TextColor3=window.theme.ContentColor,BackgroundTransparency=1,Parent=card.main})
-            local subtitle=(row.rarity~=""and row.rarity or row.category)..(row.tier and" · T"..tostring(row.tier)or"")
-            window:Create("TextLabel",{Name="ItemRarity",Text=subtitle,FontFace=window.theme.Font,TextSize=11,
-                TextTruncate=Enum.TextTruncate.AtEnd,Size=UDim2.new(1,-16,0,16),Position=UDim2.new(0,8,1,-22),
-                BackgroundTransparency=1,TextColor3=color,Parent=card.main})
-            window:Create("TextLabel",{Name="Quantity",Text="×"..tostring(row.quantity),FontFace=window.theme.Font,TextSize=12,
-                Size=UDim2.new(.4,0,0,16),Position=UDim2.new(.6,-6,0,6),TextXAlignment=Enum.TextXAlignment.Right,
-                BackgroundTransparency=1,TextColor3=window.theme.ContentColor,Parent=card.main})
-            if row.equipped or row.locked then
-                window:Create("TextLabel",{Name="ItemState",Text=row.equipped and"Dipakai"or"Terkunci",FontFace=window.theme.Font,
-                    TextSize=10,Size=UDim2.new(.6,-8,0,16),Position=UDim2.new(0,6,0,6),TextXAlignment=Enum.TextXAlignment.Left,
-                    BackgroundTransparency=1,TextColor3=color,Parent=card.main})
-            end
-            window:ConnectFor(card,card.main.Activated,function()
-                local details={"Jumlah: "..tostring(row.quantity),"ID: "..row.id}
-                if row.rarity~=""then details[#details+1]="Rarity: "..row.rarity end
-                if row.tier then details[#details+1]="Tier: "..tostring(row.tier)end
-                if row.uid then details[#details+1]="UID: "..row.uid end
-                if row.equipped then details[#details+1]="Sedang dipakai"end
-                if row.locked then details[#details+1]="Terkunci"end
-                window:Popup({title=row.name,subtitle=row.category,content=table.concat(details,"\n"),dismissable=true})
-            end)
-            self.cards[#self.cards+1]=card
+            local info={row.rarity~=""and row.rarity or row.category}
+            if row.tier then info[#info+1]="T"..tostring(row.tier)end
+            if row.equipped then info[#info+1]="Dipakai"end
+            if row.locked then info[#info+1]="Terkunci"end
+            cell.row=row
+            cell.name.Text=row.name
+            cell.quantity.Text="×"..tostring(row.quantity)
+            cell.meta.Text=table.concat(info," · ")
+            cell.meta.TextColor3=color
+            cell.stroke.Color=color
+            cell.main.Visible=true
         end
-        self:Reflow()
+        for i=#rows+1,#self.pool do self.pool[i].row=nil;self.pool[i].main.Visible=false end
+        local height=#rows>0 and#rows*58+math.max(0,#rows-1)*5 or 64
+        if height~=self.height then
+            self.height=height
+            self.main.Size=UDim2.new(1,-20,0,height)
+        end
     end
-    window:ConnectFor(gallery,gallery.main:GetPropertyChangedSignal("AbsoluteSize"),function()gallery:Reflow()end)
-    tab:_register(gallery)
-    return gallery
+    function list:Clear()
+        for _,cell in ipairs(self.pool)do
+            window:DisconnectMany(cell,cell.connections)
+            window:DestroySubtree(cell.main)
+        end
+        self.pool={};self.rows={}
+    end
+    tab:_register(list)
+    return list
 end
 
 end)()
-    local reader=makeReader({profile=profile,catalogs=catalogs,art=art.From})
-    local function nativeGui()
-        if view and valid(view)then return view.gui end
-        local adapter=env.AiosFeatureData
-        if type(adapter)=="table"and valid(adapter.View)then return adapter.View.gui end
-        local gui=player and player:FindFirstChild("PlayerGui")
-        return gui and gui:FindFirstChild("PixelGear",true)
-    end
+    local reader=makeReader({profile=profile,catalogs=catalogs})
     API.Inventory=reader.Read
     local tab=window:CreateTab({name="Inventory"})
     local alive=true
@@ -417,7 +243,7 @@ end)()
     toolbar:CreateButton({name="Berikutnya",callback=function()page=page+1;if update then update(false)end end})
     summary=tab:CreateText({text="Buka bag game sekali, lalu tekan Refresh."})
     if summary.body then summary.body.RichText=false end
-    listing=makeGallery(window,tab,art,nativeGui)
+    listing=makeList(window,tab)
     local rarityColors={Common=Color3.fromRGB(203,211,224),Uncommon=Color3.fromRGB(118,207,150),
         Rare=Color3.fromRGB(115,177,245),Epic=Color3.fromRGB(188,148,242),Legendary=Color3.fromRGB(255,184,91),
         Secret=Color3.fromRGB(238,141,186),Mythic=Color3.fromRGB(245,135,130),Divine=Color3.fromRGB(244,222,144)}
@@ -428,9 +254,9 @@ end)()
             snapshot=ok and result or{ready=false,rows={},message="Inventory belum bisa dibaca. Buka bag game, lalu coba Refresh."}
         end
         if not snapshot.ready then
-            summary:Set(snapshot.message or"Buka bag game sekali, lalu tekan Refresh.")
+            summary:Set(snapshot.message or"Buka tab Inventory atau tekan Refresh untuk membaca item.")
             if summary.body then summary.body.TextColor3=Color3.fromRGB(244,183,110)end
-            listing:SetRows({},rarityColors,"Belum ada data yang bisa ditampilkan.")
+            listing:SetRows({},rarityColors,snapshot.message or"Tekan Refresh untuk membaca inventory.")
             return
         end
         local rows=reader.Filter(snapshot,query,category)
@@ -448,7 +274,7 @@ end)()
     if tab.topbarItemInteract then
         window:Connect(tab.topbarItemInteract.MouseButton1Click,function()task.defer(function()update(true)end)end)
     end
-    update(true)
+    update(false)
     return {Destroy=function()alive=false;listing:Clear();API.Inventory=nil;API.RefreshInventory=nil end}
 end
 ]=]
@@ -703,6 +529,20 @@ local function _kqrqrxx(_f,_r,_a,_count) if _count==0 then return _f() end if _c
 -- Presentation only. Uses the existing Rayfield window and its restore button.
 local Style = {}
 local rgb = Color3.fromRGB
+function Style.BrandText(text)
+    if type(text)~="string"then return text end
+    return(text:gsub("[Rr][Aa][Yy][Ff][Ii][Ee][Ll][Dd]","AIOS"))
+end
+function Style.BrandSource(source)
+    -- The library's startup wordmark is an image, not a translatable label.
+    -- Replace only its known constructor; keep the library's source/license intact.
+    local branded,bannerCount=source:gsub("local n=Instance%.new%s*'ImageLabel'n%.Name='Banner'",
+        "local n=Instance.new'TextLabel'n.Name='Banner'n.Text='AIOS'n.Font=Enum.Font.GothamBold n.TextSize=36 n.TextColor3=Color3.fromRGB(244,151,58)",1)
+    local imageCount
+    branded,imageCount=branded:gsub("n%.Image=g%.resolve%(i%.icons%.banner%)","",1)
+    if bannerCount==1 and imageCount==1 then source=branded end
+    return(source:gsub("name='Rayfield Settings'","name='AIOS Settings'",1))
+end
 Style.Theme = {
     WindowColor=ColorSequence.new(rgb(18,21,28),rgb(29,31,39)),
     ShadowColor=rgb(9,12,18), CornerRoundness=UDim.new(0,16),
@@ -715,7 +555,7 @@ Style.Theme = {
     TabStroke=ColorSequence.new(rgb(224,135,58),rgb(103,68,39)),
     TabColor=rgb(237,231,222), TitlingColor=rgb(248,242,232),
     ContentColor=rgb(226,229,237), ActionColor=rgb(193,202,218),
-    AccentColor=rgb(244,151,58), AccentStroke=rgb(255,188,108), AccentGlow=0.8,
+    AccentColor=rgb(244,151,58), AccentStroke=rgb(255,188,108), AccentGlow=1,
     SliderBackground=rgb(49,56,69), SliderBackgroundHover=rgb(66,73,89),
     SliderProgress=ColorSequence.new(rgb(204,102,39),rgb(249,168,68)),
     SliderStroke=rgb(164,126,81), SliderHandle=rgb(255,226,181),
@@ -733,21 +573,21 @@ Style.Theme = {
 function Style.Install(window)
     if window._AiosCompact then return end
     window._AiosCompact=true
-    local scale=0.92
+    local scale=1
     local uiScale=window:Create("UIScale",{Name="AiosCompactScale",Scale=scale,Parent=window.main})
     window.AiosScale=uiScale
     local layout={}
     for key,value in pairs(window.layout)do layout[key]=value end
-    layout.railWidth=200
-    layout.railCollapsedWidth=56
+    layout.railWidth=240
+    layout.railCollapsedWidth=64
     layout.railCollapseBelow=640
-    layout.rowHeight=46
-    layout.rowSpacing=3
+    layout.rowHeight=52
+    layout.rowSpacing=4
     layout.rowCornerRadius=10
     layout.rowInset=9
     layout.rowPadding=10
-    layout.rowContentSpacing=8
-    layout.rowIconSize=18
+    layout.rowContentSpacing=10
+    layout.rowIconSize=22
     layout.railPadding=9
     window.layout=layout
     local function reflowTab(tab)
@@ -767,7 +607,7 @@ function Style.Install(window)
         applyRail(self)
         for _,tab in ipairs(self.tabs)do reflowTab(tab)end
     end
-    if window.tabListLayout then window.tabListLayout.Padding=UDim.new(0,3)end
+    if window.tabListLayout then window.tabListLayout.Padding=UDim.new(0,4)end
     for _,child in ipairs(window.tabList:GetChildren())do
         if child:IsA("UIPadding")then
             child.PaddingTop=UDim.new(0,9)
@@ -797,8 +637,8 @@ function Style.Install(window)
     window._applyWindowSize=function(self)
         if self.unloaded then return end
         local view=viewport()
-        local width=math.max(220,math.min(820,(view.X-24)/scale))
-        local height=math.max(180,math.min(500,(view.Y-32)/scale,view.Y*0.84/scale))
+        local width=math.max(220,math.min(960,(view.X-24)/scale))
+        local height=math.max(180,math.min(600,(view.Y-32)/scale,view.Y*0.9/scale))
         local size=UDim2.fromOffset(math.floor(width),math.floor(height))
         local changed=size~=self.size
         self.size=size
@@ -846,8 +686,8 @@ function Style.Install(window)
         local title=tab.topbarItemTitle
         if title then
             title.AutomaticSize=Enum.AutomaticSize.Y
-            title.Size=UDim2.new(1,-32,0,22)
-            title.TextSize=15
+            title.Size=UDim2.new(1,-36,0,24)
+            title.TextSize=17
             title.TextWrapped=true
             title.TextTruncate=Enum.TextTruncate.None
             title.TextYAlignment=Enum.TextYAlignment.Center
@@ -929,6 +769,11 @@ local function sidebarLibrary(library)
             options.showIconOnly=true
             options.subtitle="Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
+            local translator=options.translator or options.Translator
+            options.translator=function(text,locale)
+                if type(translator)=="function"then text=translator(text,locale)or text end
+                return AiosPresentation.BrandText(text)
+            end
             local window=createWindow(self,options,...)
             AiosPresentation.Install(window)
             return window
@@ -943,7 +788,12 @@ local function featureClosure(prototype, upvalues)
             local uiModule=upvalues[1][1]
             if not uiModule._AiosSingleWindow then
                 local loadUI=uiModule.LoadUI
-                uiModule.LoadUI=function(...)return sidebarLibrary(loadUI(...))end
+                uiModule.LoadUI=function(source,settings,...)
+                    local uiSettings={}
+                    for key,value in pairs(type(settings)=="table"and settings or{})do uiSettings[key]=value end
+                    uiSettings.DisableAnimations=true
+                    return sidebarLibrary(loadUI(AiosPresentation.BrandSource(source),uiSettings,...))
+                end
                 uiModule._AiosSingleWindow=true
             end
         end
@@ -994,7 +844,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: antarmuka mesin fitur belum tersedia.")
-local API = {Version="0.4.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.6.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 function API.State()return NativeControl("state")end
 function API.Settings()return NativeSettings end
 function API.Set(key,value)
