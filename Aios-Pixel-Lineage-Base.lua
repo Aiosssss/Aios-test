@@ -1,8 +1,9 @@
--- AIOS HUB / Pixel Lineage 0.2 - single window, left sidebar
+-- AIOS HUB / Pixel Lineage 0.3 - compact orange UI + inventory viewer
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
 -- SkillState(), SetSkill(name,value), SetRotation({skillId1,skillId2}), ShowAdvanced(bool).
+-- Inventory(), RefreshInventory(): local inventory snapshots and viewer refresh.
 -- The main AIOS HUB window uses Rayfield Gen2 from https://sirius.menu/gen2.
 -- Filesystem cache enables the same script to resume after teleport when supported.
 -- Local syntax/structure verification only; not yet verified inside Arceus X/game.
@@ -10,12 +11,209 @@
 --!nolint
 
 -- EDITABLE UI START
-local UI_SOURCE=[=[-- Use the existing AIOS HUB window as the only interface.
--- Its full feature controls and callbacks are preserved.
--- The window is created with a left sidebar by the UI loader below.
+local UI_SOURCE=[=[-- Extends the existing AIOS HUB; does not create a second window.
 return function(API)
-    API.ShowAdvanced(true)
-    return {}
+    local window=API.Window
+    local player=game:GetService("Players").LocalPlayer
+    local env=type(getgenv)=="function"and getgenv()or _G
+    local view,nextProbe=nil,-math.huge
+    local config,gear
+    local function catalogs()
+        if config and gear then return config,gear end
+        local root=game:GetService("ReplicatedStorage"):FindFirstChild("PlatformBattles")
+        local shared=root and root:FindFirstChild("Shared")
+        local function get(name)
+            local module=shared and shared:FindFirstChild(name)
+            if not module then return nil end
+            local ok,value=pcall(require,module)
+            return ok and type(value)=="table"and value or nil
+        end
+        config=config or get("GameConfig")
+        gear=gear or get("GearConfig")
+        return config or{},gear or{}
+    end
+    local function valid(candidate)
+        if type(candidate)~="table"or rawget(candidate,"player")~=player then return false end
+        local gui=rawget(candidate,"gui")
+        return typeof(gui)=="Instance"and gui.Name=="PixelGear"and gui.Parent~=nil
+    end
+    local function profile()
+        local adapter=env.AiosFeatureData
+        if type(adapter)=="table"and type(adapter.Profile)=="function"then
+            local ok,value=pcall(adapter.Profile,adapter)
+            if ok and type(value)=="table"then return value end
+        end
+        if view and valid(view)then return rawget(view,"profile")end
+        view=nil
+        if os.clock()<nextProbe then return nil end
+        nextProbe=os.clock()+2
+        local objects
+        if type(filtergc)=="function"then
+            local ok,result=pcall(filtergc,"table",{Keys={"player","profile","gameConfig"}},false)
+            if ok and type(result)=="table"then objects=result end
+        end
+        if type(objects)~="table"and type(getgc)=="function"then
+            local ok,result=pcall(getgc,true)
+            if ok and type(result)=="table"then objects=result end
+        end
+        if type(objects)~="table"then
+            return nil,"Data inventory belum terbaca. Buka bag game, lalu Refresh. Jika tetap kosong, executor mungkin tidak mendukung pembacaan data ini."
+        end
+        for _,candidate in pairs(objects)do
+            if valid(candidate)then view=candidate;return rawget(view,"profile")end
+        end
+        return nil,"Buka inventory/bag game sekali, lalu tekan Refresh."
+    end
+    -- The builder inserts the inventory snapshot reader here.
+    local makeReader=(function()
+-- Inventory snapshots only; no equipment, sale, stash, or network mutations.
+return function(deps)
+    local reader={}
+    local rarityRank={Common=1,Uncommon=2,Rare=3,Epic=4,Legendary=5,Secret=6,Mythic=7,Divine=8}
+    function reader.Read()
+        local profile,reason=deps.profile()
+        if type(profile)~="table"then
+            return {ready=false,rows={},message=reason or"Buka inventory/bag game sekali, lalu tekan Refresh."}
+        end
+        local config,gear=deps.catalogs()
+        config=type(config)=="table"and config or{}
+        gear=type(gear)=="table"and gear or{}
+        local rows,equipped={},{}
+        local itemKinds,itemTotal,gearTotal,equippedTotal=0,0,0,0
+        for _,uid in pairs(type(profile.gear)=="table"and profile.gear or{})do equipped[tostring(uid)]=true end
+        for id,value in pairs(type(profile.inventory)=="table"and profile.inventory or{})do
+            local count=tonumber(value)
+            if count and count==count and count>0 and count<math.huge then
+                count=math.floor(count)
+                if count>0 then
+                    local definition=(config.Items or{})[id]or(gear.Items or{})[id]or{}
+                    rows[#rows+1]={id=tostring(id),name=tostring(definition.name or id),
+                        kind="item",quantity=count,rarity=tostring(definition.rarity or""),
+                        category=tostring(definition.type or definition.kind or"Item")}
+                    itemKinds=itemKinds+1
+                    itemTotal=itemTotal+count
+                end
+            end
+        end
+        for uid,piece in pairs(type(profile.gearBag)=="table"and profile.gearBag or{})do
+            if type(piece)=="table"and piece.base~=nil then
+                local definition=(gear.Items or{})[piece.base]or{}
+                local described
+                if type(gear.Describe)=="function"then
+                    local ok,value=pcall(gear.Describe,piece)
+                    if ok and type(value)=="table"then described=value end
+                end
+                described=described or definition
+                local worn=equipped[tostring(uid)]==true
+                rows[#rows+1]={id=tostring(piece.base),uid=tostring(uid),
+                    name=tostring(described.displayName or described.name or definition.name or piece.base),
+                    kind="gear",quantity=1,equipped=worn,locked=piece.locked==true or described.locked==true,
+                    rarity=tostring(described.rarity or definition.rarity or""),
+                    tier=tonumber(described.tier or definition.tier),
+                    category=tostring(described.gearKind or definition.gearKind or"Gear")}
+                gearTotal=gearTotal+1
+                if worn then equippedTotal=equippedTotal+1 end
+            end
+        end
+        table.sort(rows,function(a,b)
+            if a.kind~=b.kind then return a.kind=="item"end
+            if a.equipped~=b.equipped then return a.equipped==true end
+            if (a.tier or 0)~=(b.tier or 0)then return(a.tier or 0)>(b.tier or 0)end
+            if (rarityRank[a.rarity]or 0)~=(rarityRank[b.rarity]or 0)then return(rarityRank[a.rarity]or 0)>(rarityRank[b.rarity]or 0)end
+            if a.name:lower()~=b.name:lower()then return a.name:lower()<b.name:lower()end
+            return(a.uid or a.id)<(b.uid or b.id)
+        end)
+        return {ready=true,rows=rows,itemKinds=itemKinds,itemTotal=itemTotal,gearTotal=gearTotal,
+            equippedTotal=equippedTotal,heroSlot=profile.heroSlot,statContext=profile.statContext}
+    end
+    function reader.Filter(snapshot,query,category)
+        local result={}
+        query=tostring(query or""):lower():match("^%s*(.-)%s*$")
+        for _,row in ipairs(snapshot.rows or{})do
+            local included=category==nil or category=="Semua"
+                or category=="Item & material"and row.kind=="item"
+                or category=="Gear"and row.kind=="gear"
+                or category=="Sedang dipakai"and row.equipped==true
+            local text=(row.name.." "..row.id.." "..row.rarity.." "..row.category):lower()
+            if included and(query==""or text:find(query,1,true))then result[#result+1]=row end
+        end
+        return result
+    end
+    return reader
+end
+
+end)()
+    local reader=makeReader({profile=profile,catalogs=catalogs})
+    API.Inventory=reader.Read
+    local tab=window:CreateTab({name="Inventory"})
+    local alive=true
+    local snapshot={ready=false,rows={}}
+    local query,category,page="","Semua",1
+    local pageSize=20
+    local summary,listing
+    local update
+    tab:CreateInput({name="Cari item",placeholder="Nama, ID, atau rarity",value="",forgetState=true,
+        callback=function(value)query=tostring(value or"");page=1;if update then update(false)end end})
+    tab:CreateDropdown({name="Tampilkan",options={"Semua","Item & material","Gear","Sedang dipakai"},value="Semua",forgetState=true,
+        callback=function(value)category=type(value)=="table"and value[1]or value;page=1;if update then update(false)end end})
+    local toolbar=tab:CreateGroup({direction="Horizontal"})
+    toolbar:CreateButton({name="Refresh",callback=function()if update then update(true)end end})
+    toolbar:CreateButton({name="Sebelumnya",callback=function()page=math.max(1,page-1);if update then update(false)end end})
+    toolbar:CreateButton({name="Berikutnya",callback=function()page=page+1;if update then update(false)end end})
+    summary=tab:CreateText({text="Buka bag game sekali, lalu tekan Refresh."})
+    if summary.body then summary.body.RichText=false end
+    listing=tab:CreateConsole({name="Isi inventory",text="",height=165,follow=false,maxLines=60})
+    local rarityColors={Common=Color3.fromRGB(203,211,224),Uncommon=Color3.fromRGB(118,207,150),
+        Rare=Color3.fromRGB(115,177,245),Epic=Color3.fromRGB(188,148,242),Legendary=Color3.fromRGB(255,184,91),
+        Secret=Color3.fromRGB(238,141,186),Mythic=Color3.fromRGB(245,135,130),Divine=Color3.fromRGB(244,222,144)}
+    local function plain(value)return tostring(value):gsub("[\r\n\t]"," ")end
+    update=function(read)
+        if not alive or window.unloaded then return end
+        if read then
+            local ok,result=pcall(reader.Read)
+            snapshot=ok and result or{ready=false,rows={},message="Inventory belum bisa dibaca. Buka bag game, lalu coba Refresh."}
+        end
+        if not snapshot.ready then
+            summary:Set(snapshot.message or"Buka bag game sekali, lalu tekan Refresh.")
+            if summary.body then summary.body.TextColor3=Color3.fromRGB(244,183,110)end
+            listing:Set("Belum ada data yang bisa ditampilkan.")
+            return
+        end
+        local rows=reader.Filter(snapshot,query,category)
+        local pages=math.max(1,math.ceil(#rows/pageSize))
+        page=math.clamp(page,1,pages)
+        summary:Set(string.format("%d jenis item (%d total)  ·  %d gear  ·  %d dipakai\n%d hasil  ·  Halaman %d/%d",snapshot.itemKinds,snapshot.itemTotal,snapshot.gearTotal,snapshot.equippedTotal,#rows,page,pages))
+        if summary.body then summary.body.TextColor3=Color3.fromRGB(153,210,177)end
+        local lines,colors={},{}
+        for index=(page-1)*pageSize+1,math.min(page*pageSize,#rows)do
+            local row=rows[index]
+            if row.kind=="item"then
+                lines[#lines+1]=plain(row.name).."  ×"..tostring(row.quantity)
+            else
+                local flags=(row.equipped and" · DIPAKAI"or"")..(row.locked and" · TERKUNCI"or"")
+                local details=(row.rarity~=""and row.rarity.." · "or"")..(row.tier and"T"..tostring(row.tier).." · "or"")..row.category
+                lines[#lines+1]=plain(row.name).."  ["..plain(details).."]"..flags
+            end
+            colors[#lines]=row.equipped and Color3.fromRGB(126,219,169)or rarityColors[row.rarity]or window.theme.ContentColor
+            lines[#lines+1]="  ID: "..plain(row.id)..(row.uid and"  / "..plain(row.uid)or"")
+            colors[#lines]=Color3.fromRGB(147,160,182)
+        end
+        if #lines==0 then lines[1]="Tidak ada item yang cocok dengan pencarian/filter ini."end
+        listing:Set(table.concat(lines,"\n"))
+        for index,label in ipairs(listing.lineLabels or{})do
+            label.TextColor3=colors[index]or window.theme.ContentColor
+            label.FontFace=window.theme.Font
+            label.TextSize=14
+            label.LineHeight=1.2
+        end
+        if listing.scroll then listing.scroll.CanvasPosition=Vector2.new(0,0)end
+    end
+    API.RefreshInventory=function()update(true);return snapshot end
+    if tab.topbarItemInteract then
+        window:Connect(tab.topbarItemInteract.MouseButton1Click,function()task.defer(function()update(true)end)end)
+    end
+    update(true)
+    return {Destroy=function()alive=false;API.Inventory=nil;API.RefreshInventory=nil end}
 end
 ]=]
 -- EDITABLE UI END
@@ -265,7 +463,203 @@ _yyshygnqr[237]={id=237,np=0,va=false,nuv=35,ms=10,sp={238,239,240},k={"type",8,
 _yyshygnqr[238]={id=238,np=0,va=false,nuv=1,ms=1,sp={},k={},bc={36,0,0,0,1},ready=true}
 _yyshygnqr[239]={id=239,np=0,va=false,nuv=10,ms=1,sp={},k={},bc={36,0,0,0,1},ready=true}
 _yyshygnqr[240]={id=240,np=0,va=false,nuv=13,ms=4,sp={},k={"state",5,"RunAction","Tick",10,"action","os","clock","SyncBattle"},bc={65,0,0,0,0,208,0,1,0,1,0,0,65,1,0,1,0,134,0,0,1,0,55,0,0,0,0,157,128,8,36,0,0,0,1,194,128,0,1,0,2,0,2,0,0,0,1,0,1,0,1,0,1,117,0,0,0,0,194,128,8,122,0,0,0,1,157,128,0,65,0,0,3,0,117,0,0,0,0,222,128,22,49,0,1,0,3,0,3,0,1,0,1,24,0,2,0,1,0,1,0,2,0,0,55,0,0,0,0,194,128,8,122,0,0,0,1,194,128,0,1,0,2,0,4,0,0,0,1,0,1,0,1,0,1,117,0,0,1,0,157,128,15,1,0,2,0,5,0,0,0,1,0,1,0,1,0,1,117,0,0,0,0,222,128,8,36,0,0,0,1,194,128,0,65,0,0,6,0,225,0,1,0,1,0,0,65,0,0,7,0,117,0,0,0,0,194,128,14,190,8,0,1,0,0,0,1,0,0,0,157,128,11,190,9,0,1,0,0,0,1,0,0,0,46,3,0,3,0,1,0,2,0,3,0,7,0,3,0,6,0,2,0,3,0,213,3,0,10,0,80,0,1,0,2,0,3,131,0,2,0,4,227,1,0,2,0,1,0,222,128,7,230,0,0,0,0,1,0,230,0,0,1,0,0,0,117,0,0,0,0,157,128,62,46,3,0,3,0,1,0,2,0,3,0,7,0,3,0,6,0,2,0,3,0,65,3,0,11,0,10,0,1,0,2,0,3,16,0,2,0,1,227,1,0,2,0,1,0,194,128,7,230,0,0,0,0,1,0,230,0,0,1,0,0,0,117,0,0,0,0,194,128,77,243,0,0,6,0,44,7,0,0,0,0,0,145,0,2,0,1,0,0,123,10,0,0,0,65,0,0,12,0,244,1,0,1,0,0,0,2,0,8,0,65,0,0,12,0,16,0,1,0,2,175,0,1,0,2,0,0,120,0,3,0,3,0,2,0,3,0,0,0,1,0,0,0,5,194,128,0,122,0,0,0,1},ready=true}
-local function _kqrqrxx(_f,_r,_a,_count) if _count==0 then return _f() end if _count==1 then return _f(_r[_a+1]) end if _count==2 then return _f(_r[_a+1],_r[_a+2]) end if _count==3 then return _f(_r[_a+1],_r[_a+2],_r[_a+3]) end local _args={} for _i=1,_count do _args[_i]=_r[_a+_i] end return _f(_qqugerks(_args,1,_count)) end local _0x0ff9c={[39]=4,[251]=4,[131]=4,[16]=4,[70]=4,[230]=6,[247]=4,[65]=4,[213]=4,[123]=4,[239]=4,[165]=4,[243]=4,[175]=6,[29]=6,[158]=6,[93]=6,[33]=6,[248]=6,[44]=6,[217]=6,[115]=6,[218]=6,[57]=6,[85]=6,[220]=6,[171]=6,[10]=6,[50]=6,[80]=6,[106]=6,[18]=6,[124]=6,[4]=6,[250]=6,[173]=4,[134]=4,[11]=4,[62]=6,[136]=6,[154]=6,[227]=6,[103]=6,[53]=6,[117]=4,[55]=4,[157]=2,[194]=2,[222]=2,[145]=6,[208]=6,[225]=6,[122]=4,[36]=4,[96]=4,[132]=4,[151]=6,[75]=2,[121]=4,[128]=4,[133]=4,[253]=4,[226]=4,[216]=4,[139]=4,[198]=4,[210]=8,[116]=8,[152]=8,[162]=8,[219]=8,[112]=8,[252]=8,[78]=8,[143]=8,[224]=8,[168]=8,[246]=8,[15]=8,[67]=20,[155]=16,[99]=14,[205]=8,[241]=8,[24]=10,[178]=8,[238]=14,[149]=18,[169]=20,[27]=8,[51]=18,[229]=12,[114]=14,[159]=16,[89]=8,[191]=16,[94]=10,[81]=18,[204]=8,[140]=18,[127]=14,[73]=10,[20]=22,[119]=10,[207]=10,[104]=16,[1]=14,[235]=12,[126]=10,[98]=10,[97]=18,[30]=18,[42]=20,[87]=14,[47]=12,[49]=10,[190]=10,[92]=10,[52]=18,[146]=22,[120]=16,[113]=16,[254]=8,[59]=20,[237]=12,[240]=16,[76]=16,[234]=12,[3]=8,[153]=8,[101]=20,[184]=16,[135]=18,[183]=8,[232]=10,[148]=10,[84]=14,[161]=10,[12]=10,[90]=14,[144]=8,[48]=18,[91]=14,[109]=14,[86]=10,[180]=12,[74]=16,[201]=8,[46]=20,[177]=12,[244]=10,[170]=14,[181]=20,[77]=10,[172]=14,[130]=14,[249]=14,[193]=16,[211]=10,[137]=10,[209]=18,[35]=12,[189]=14,[28]=22,[147]=22,[186]=22,[110]=8,[43]=22,[199]=16,[17]=16,[221]=16,[45]=8,[102]=16,[228]=20,[214]=20} local _mutg_tvuxjb={[39]=true,[251]=true} local l1IIIl1l1
+local function _kqrqrxx(_f,_r,_a,_count) if _count==0 then return _f() end if _count==1 then return _f(_r[_a+1]) end if _count==2 then return _f(_r[_a+1],_r[_a+2]) end if _count==3 then return _f(_r[_a+1],_r[_a+2],_r[_a+3]) end local _args={} for _i=1,_count do _args[_i]=_r[_a+_i] end return _f(_qqugerks(_args,1,_count)) end local _0x0ff9c={[39]=4,[251]=4,[131]=4,[16]=4,[70]=4,[230]=6,[247]=4,[65]=4,[213]=4,[123]=4,[239]=4,[165]=4,[243]=4,[175]=6,[29]=6,[158]=6,[93]=6,[33]=6,[248]=6,[44]=6,[217]=6,[115]=6,[218]=6,[57]=6,[85]=6,[220]=6,[171]=6,[10]=6,[50]=6,[80]=6,[106]=6,[18]=6,[124]=6,[4]=6,[250]=6,[173]=4,[134]=4,[11]=4,[62]=6,[136]=6,[154]=6,[227]=6,[103]=6,[53]=6,[117]=4,[55]=4,[157]=2,[194]=2,[222]=2,[145]=6,[208]=6,[225]=6,[122]=4,[36]=4,[96]=4,[132]=4,[151]=6,[75]=2,[121]=4,[128]=4,[133]=4,[253]=4,[226]=4,[216]=4,[139]=4,[198]=4,[210]=8,[116]=8,[152]=8,[162]=8,[219]=8,[112]=8,[252]=8,[78]=8,[143]=8,[224]=8,[168]=8,[246]=8,[15]=8,[67]=20,[155]=16,[99]=14,[205]=8,[241]=8,[24]=10,[178]=8,[238]=14,[149]=18,[169]=20,[27]=8,[51]=18,[229]=12,[114]=14,[159]=16,[89]=8,[191]=16,[94]=10,[81]=18,[204]=8,[140]=18,[127]=14,[73]=10,[20]=22,[119]=10,[207]=10,[104]=16,[1]=14,[235]=12,[126]=10,[98]=10,[97]=18,[30]=18,[42]=20,[87]=14,[47]=12,[49]=10,[190]=10,[92]=10,[52]=18,[146]=22,[120]=16,[113]=16,[254]=8,[59]=20,[237]=12,[240]=16,[76]=16,[234]=12,[3]=8,[153]=8,[101]=20,[184]=16,[135]=18,[183]=8,[232]=10,[148]=10,[84]=14,[161]=10,[12]=10,[90]=14,[144]=8,[48]=18,[91]=14,[109]=14,[86]=10,[180]=12,[74]=16,[201]=8,[46]=20,[177]=12,[244]=10,[170]=14,[181]=20,[77]=10,[172]=14,[130]=14,[249]=14,[193]=16,[211]=10,[137]=10,[209]=18,[35]=12,[189]=14,[28]=22,[147]=22,[186]=22,[110]=8,[43]=22,[199]=16,[17]=16,[221]=16,[45]=8,[102]=16,[228]=20,[214]=20} local _mutg_tvuxjb={[39]=true,[251]=true} local AiosPresentation=(function()
+-- Presentation only. Uses the existing Rayfield window and its restore button.
+local Style = {}
+local rgb = Color3.fromRGB
+Style.Theme = {
+    WindowColor=ColorSequence.new(rgb(18,21,28),rgb(29,31,39)),
+    ShadowColor=rgb(9,12,18), CornerRoundness=UDim.new(0,16),
+    ElementGradient=ColorSequence.new(rgb(35,39,49),rgb(30,34,43)),
+    ElementStroke=rgb(57,64,79),
+    ElementStrokeGradient=ColorSequence.new(rgb(62,69,84),rgb(43,49,62)),
+    ElementStrokeHover=rgb(137,93,51), ElementStrokeTransparency=0.25,
+    ElementCornerRadius=UDim.new(0,10), ElementTextHoverColor=rgb(255,242,224),
+    TabBackground=ColorSequence.new(rgb(105,62,30),rgb(58,40,29)),
+    TabStroke=ColorSequence.new(rgb(224,135,58),rgb(103,68,39)),
+    TabColor=rgb(237,231,222), TitlingColor=rgb(248,242,232),
+    ContentColor=rgb(226,229,237), ActionColor=rgb(193,202,218),
+    AccentColor=rgb(244,151,58), AccentStroke=rgb(255,188,108), AccentGlow=0.8,
+    SliderBackground=rgb(49,56,69), SliderBackgroundHover=rgb(66,73,89),
+    SliderProgress=ColorSequence.new(rgb(204,102,39),rgb(249,168,68)),
+    SliderStroke=rgb(164,126,81), SliderHandle=rgb(255,226,181),
+    DropdownHighlight=rgb(255,181,91), StatBackground=rgb(23,28,37),
+    ToggleTrack=rgb(116,131,155), ToggleTrackTransparency=0.75,
+    ToggleKnobOff=rgb(153,165,185), ToggleKnobOffTransparency=0.2,
+    FieldBackground=rgb(10,16,25), FieldTransparency=0.3,
+    FieldGlow=rgb(244,151,58), PlaceholderColor=rgb(143,156,178),
+    SurfaceStroke=rgb(107,121,146), NeutralButton=rgb(41,48,61),
+    NeutralButtonHover=rgb(58,67,84), NeutralButtonStroke=rgb(110,123,147),
+    ErrorColor=rgb(186,61,65), ErrorStrokeColor=rgb(255,128,124),
+    LiveAnimation=false,
+}
+
+function Style.Install(window)
+    if window._AiosCompact then return end
+    window._AiosCompact=true
+    local scale=0.86
+    local uiScale=window:Create("UIScale",{Name="AiosCompactScale",Scale=scale,Parent=window.main})
+    window.AiosScale=uiScale
+    local layout={}
+    for key,value in pairs(window.layout)do layout[key]=value end
+    layout.railWidth=180
+    layout.railCollapsedWidth=56
+    layout.railCollapseBelow=570
+    layout.rowHeight=40
+    layout.rowSpacing=3
+    layout.rowCornerRadius=10
+    layout.rowInset=9
+    layout.rowPadding=10
+    layout.rowContentSpacing=8
+    layout.rowIconSize=18
+    layout.railPadding=9
+    window.layout=layout
+    if window.tabListLayout then window.tabListLayout.Padding=UDim.new(0,3)end
+    for _,child in ipairs(window.tabList:GetChildren())do
+        if child:IsA("UIPadding")then
+            child.PaddingTop=UDim.new(0,9)
+            child.PaddingBottom=UDim.new(0,9)
+        end
+    end
+    -- Keep navigation space for tabs; the avatar footer is optional decoration.
+    window.settings.showProfile=false
+    if window.profile then window.profile.Visible=false end
+    window.tabList.Size=UDim2.fromScale(1,1)
+    window.tabList.ScrollBarThickness=2
+    window.tabList.ScrollBarImageColor3=rgb(244,151,58)
+    window.tabList.ScrollBarImageTransparency=0.5
+
+    local function viewport()
+        local camera=workspace.CurrentCamera
+        return camera and camera.ViewportSize or Vector2.new(1024,640)
+    end
+    window._clampedPosition=function(self,position)
+        if not self.settings.keepOnScreen or position.X.Scale~=0 or position.Y.Scale~=0 then return position end
+        local view=viewport()
+        local width,height=self.size.X.Offset*scale/2,self.size.Y.Offset*scale/2
+        return UDim2.fromOffset(
+            math.clamp(position.X.Offset,width+8,math.max(width+8,view.X-width-8)),
+            math.clamp(position.Y.Offset,height+8,math.max(height+8,view.Y-height-8)))
+    end
+    window._applyWindowSize=function(self)
+        if self.unloaded then return end
+        local view=viewport()
+        local width=math.max(220,math.min(720,(view.X-24)/scale))
+        local height=math.max(180,math.min(450,(view.Y-32)/scale,view.Y*0.8/scale))
+        local size=UDim2.fromOffset(math.floor(width),math.floor(height))
+        local changed=size~=self.size
+        self.size=size
+        self:_applyRailWidth()
+        if self.hidden or self.minimised or self.animating or self._revealing then
+            self._pendingResize=self._pendingResize or changed
+            if self.hidden and self._collapsedShown and not self.animating then
+                local position,collapsedSize=self:_collapsedRect()
+                self.main.Position=position
+                self.main.Size=collapsedSize
+            end
+            return
+        end
+        if changed or self._pendingResize then
+            self._pendingResize=false
+            self.main.Size=size
+            self:_clampToScreen()
+        end
+    end
+    window:_applyWindowSize()
+
+    -- The native restore interaction retains its tap/drag logic, with one A glyph.
+    window.showIconOnly=true
+    window.showName="A"
+    if window.collapsedIcon then window.collapsedIcon.Visible=false end
+    if window.collapsedTitle then window.collapsedTitle.Parent.Visible=false end
+    window._collapsedRect=function(self)
+        local view=viewport()
+        local physicalSize=48
+        local position=self._collapsedPosition or UDim2.fromOffset(36,math.floor(view.Y*0.38))
+        local x=position.X.Scale*view.X+position.X.Offset
+        local y=position.Y.Scale*view.Y+position.Y.Offset
+        position=UDim2.fromOffset(math.clamp(x,30,math.max(30,view.X-30)),math.clamp(y,30,math.max(30,view.Y-30)))
+        return position,UDim2.fromOffset(physicalSize/scale,physicalSize/scale)
+    end
+    window:Create("TextLabel",{
+        Name="AiosLogoA",Text="A",Font=Enum.Font.GothamBold,TextSize=30,
+        BackgroundTransparency=1,Size=UDim2.fromScale(1,1),
+        ZIndex=window.collapsedInteract.ZIndex+1,Active=false,Parent=window.collapsedInteract,
+    },{TextColor3="AccentColor"})
+
+    local function styleTab(tab)
+        if tab._AiosRow or tab.neglectSelector then return end
+        tab._AiosRow=true
+        local title=tab.topbarItemTitle
+        if title then
+            title.AutomaticSize=Enum.AutomaticSize.None
+            title.Size=UDim2.new(1,-34,0,20)
+            title.TextSize=15
+            title.TextWrapped=false
+            title.TextTruncate=Enum.TextTruncate.AtEnd
+        end
+        local apply=tab._applyVisual
+        if type(apply)=="function"then
+            tab._applyVisual=function(self,state,...)
+                local result=apply(self,state,...)
+                local color=state=="selected"and window.theme.AccentColor or rgb(175,186,204)
+                if self.topbarItemTitle then self.topbarItemTitle.TextColor3=color end
+                if self.topbarItemIcon then self.topbarItemIcon.ImageColor3=color end
+                return result
+            end
+        end
+    end
+    local createTab=window.CreateTab
+    window.CreateTab=function(self,...)
+        local tab=createTab(self,...)
+        styleTab(tab)
+        self:_applyRailWidth()
+        if not self.hidden and tab._applyVisual then
+            tab:_applyVisual(self.selectedTab==tab and"selected"or"unselected",false)
+        end
+        return tab
+    end
+    for _,tab in ipairs(window.tabs)do styleTab(tab)end
+
+    -- Drag the title bar directly on touchscreens. No unscaled bottom handle.
+    local handle=window.drag and window.drag.drag
+    if handle then
+        handle.Visible=false
+        window:Connect(handle:GetPropertyChangedSignal("Visible"),function()
+            if handle.Visible then handle.Visible=false end
+        end)
+    end
+    local inputService=game:GetService("UserInputService")
+    local active,start,origin
+    window.topbar.Active=true
+    window:Connect(window.topbar.InputBegan,function(input)
+        local kind=input.UserInputType
+        if window.hidden or window.animating then return end
+        if kind~=Enum.UserInputType.MouseButton1 and kind~=Enum.UserInputType.Touch then return end
+        active=input
+        start=Vector2.new(input.Position.X,input.Position.Y)
+        local view=viewport()
+        local position=window.main.Position
+        origin=UDim2.fromOffset(position.X.Scale*view.X+position.X.Offset,position.Y.Scale*view.Y+position.Y.Offset)
+    end)
+    window:Connect(inputService.InputChanged,function(input)
+        if not active or window.hidden or window.animating then return end
+        if input~=active and input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+        local delta=Vector2.new(input.Position.X,input.Position.Y)-start
+        if delta.Magnitude<5 then return end
+        local position=UDim2.new(origin.X.Scale,origin.X.Offset+delta.X,origin.Y.Scale,origin.Y.Offset+delta.Y)
+        window.main.Position=window:_clampedPosition(position)
+        window._restorePosition=window.main.Position
+    end)
+    window:Connect(inputService.InputEnded,function(input)
+        if input==active or input.UserInputType==Enum.UserInputType.MouseButton1 then active=nil end
+    end)
+    window:Connect(inputService.WindowFocusReleased,function()active=nil end)
+end
+return Style
+
+end)()
+local l1IIIl1l1
 local function sidebarLibrary(library)
     assert(type(library)=="table" and type(library.CreateWindow)=="function","Aios: UI library did not load.")
     if not library._AiosSidebarLayout then
@@ -275,8 +669,12 @@ local function sidebarLibrary(library)
             options.sidebarLayout=true
             options.SidebarLayout=true
             options.name="AIOS HUB"
-            options.showName="AIOS HUB"
-            return createWindow(self,options,...)
+            options.showName="A"
+            options.showIconOnly=true
+            options.theme=AiosPresentation.Theme
+            local window=createWindow(self,options,...)
+            AiosPresentation.Install(window)
+            return window
         end
         library._AiosSidebarLayout=true
     end
@@ -339,7 +737,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: antarmuka mesin fitur belum tersedia.")
-local API = {Version="0.2.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.3.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 function API.State()return NativeControl("state")end
 function API.Settings()return NativeSettings end
 function API.Set(key,value)
