@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.6 - larger panel, readable navigation, lightweight inventory
+-- AIOS HUB / Pixel Lineage 0.7 - full-size window, clean navigation, animated AIOS branding
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -280,7 +280,7 @@ end
 ]=]
 -- EDITABLE UI END
 
-local ENGINE_SOURCE=[=[-- Feature engine derived from the supplied CinderHub payload (sero).
+local ENGINE_SOURCE=[==[-- Feature engine derived from the supplied CinderHub payload (sero).
 -- Original gameplay dispatcher retained; editable UI and public API added.
 local NativeWindow,NativeControl,NativeUnload,NativeSettings,NativeSave,NativeFeatures,OnEngineUnload
 local _pdhfusz=(bit32 and bit32.bxor) or (bit and bit.bxor) or (function() local function _x(a,b) local r,p=0,1 for _=1,8 do local ab,bb=a%2,b%2 if ab~=bb then r=r+p end a=(a-ab)/2;b=(b-bb)/2;p=p*2 end return r end return _x end)() local _qqugerks=unpack or table.unpack local _I11I1l11=(getfenv and getfenv()) or _G local lIllllllIlII=table.pack or function(...) return {n=select("#",...),...} end 
@@ -529,19 +529,118 @@ local function _kqrqrxx(_f,_r,_a,_count) if _count==0 then return _f() end if _c
 -- Presentation only. Uses the existing Rayfield window and its restore button.
 local Style = {}
 local rgb = Color3.fromRGB
+local drawLogo=(function()
+-- A small code-drawn monogram: no downloaded image assets.
+return function(create,parent,size,z)
+    z=z or 1
+    local tile=create("Frame",{Name="AiosLogo",Size=UDim2.fromOffset(size,size),
+        AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),BorderSizePixel=0,
+        BackgroundColor3=Color3.fromRGB(26,31,41),ZIndex=z,Parent=parent})
+    create("UICorner",{CornerRadius=UDim.new(0,math.floor(size*.26)),Parent=tile})
+    create("UIStroke",{Color=Color3.fromRGB(236,146,62),Transparency=.35,Thickness=1,Parent=tile})
+    local function bar(name,x,y,w,h,rotation,color)
+        local frame=create("Frame",{Name=name,AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(x,y),
+            Size=UDim2.fromOffset(size*w,size*h),Rotation=rotation,BorderSizePixel=0,
+            BackgroundColor3=color,ZIndex=z+1,Parent=tile})
+        create("UICorner",{CornerRadius=UDim.new(0,size*.04),Parent=frame})
+    end
+    bar("LeftStem",.40,.48,.12,.62,24,Color3.fromRGB(255,182,100))
+    bar("RightStem",.61,.48,.12,.62,-24,Color3.fromRGB(242,136,47))
+    bar("Crossbar",.51,.60,.31,.10,0,Color3.fromRGB(255,207,143))
+    bar("Signature",.73,.78,.12,.045,0,Color3.fromRGB(242,136,47))
+    return tile
+end
+
+end)()
+local splashSource=[=[local drawLogo=(function()
+-- A small code-drawn monogram: no downloaded image assets.
+return function(create,parent,size,z)
+    z=z or 1
+    local tile=create("Frame",{Name="AiosLogo",Size=UDim2.fromOffset(size,size),
+        AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),BorderSizePixel=0,
+        BackgroundColor3=Color3.fromRGB(26,31,41),ZIndex=z,Parent=parent})
+    create("UICorner",{CornerRadius=UDim.new(0,math.floor(size*.26)),Parent=tile})
+    create("UIStroke",{Color=Color3.fromRGB(236,146,62),Transparency=.35,Thickness=1,Parent=tile})
+    local function bar(name,x,y,w,h,rotation,color)
+        local frame=create("Frame",{Name=name,AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(x,y),
+            Size=UDim2.fromOffset(size*w,size*h),Rotation=rotation,BorderSizePixel=0,
+            BackgroundColor3=color,ZIndex=z+1,Parent=tile})
+        create("UICorner",{CornerRadius=UDim.new(0,size*.04),Parent=frame})
+    end
+    bar("LeftStem",.40,.48,.12,.62,24,Color3.fromRGB(255,182,100))
+    bar("RightStem",.61,.48,.12,.62,-24,Color3.fromRGB(242,136,47))
+    bar("Crossbar",.51,.60,.31,.10,0,Color3.fromRGB(255,207,143))
+    bar("Signature",.73,.78,.12,.045,0,Color3.fromRGB(242,136,47))
+    return tile
+end
+
+end)()
+return function(container,displayOrder)
+    local function create(class,props)
+        local instance=Instance.new(class)
+        for key,value in pairs(props or{})do instance[key]=value end
+        return instance
+    end
+    local gui=create("ScreenGui",{Name="AiosOpening",ResetOnSpawn=false,IgnoreGuiInset=true,
+        DisplayOrder=displayOrder,Parent=container})
+    local group=create("Frame",{Name="Brand",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
+        Size=UDim2.fromOffset(278,92),BackgroundTransparency=1,Parent=gui})
+    local logoHost=create("Frame",{Name="Emblem",Size=UDim2.fromOffset(68,68),Position=UDim2.fromOffset(0,12),
+        BackgroundTransparency=1,Parent=group})
+    drawLogo(create,logoHost,64,2)
+    local letters={}
+    for i=1,4 do
+        letters[i]=create("TextLabel",{Name="Letter"..i,Text=("AIOS"):sub(i,i),Font=Enum.Font.GothamBold,
+            TextSize=40,TextColor3=i==1 and Color3.fromRGB(249,169,80)or Color3.fromRGB(246,239,228),
+            TextTransparency=1,Size=UDim2.fromOffset(42,54),Position=UDim2.fromOffset(90+(i-1)*42,27),
+            BackgroundTransparency=1,Parent=group})
+    end
+    local line=create("Frame",{Name="Accent",Size=UDim2.fromOffset(0,2),Position=UDim2.fromOffset(94,72),
+        BorderSizePixel=0,BackgroundColor3=Color3.fromRGB(244,151,58),Parent=group})
+    local started=os.clock()
+    local connection
+    connection=game:GetService("RunService").RenderStepped:Connect(function()
+        if not gui.Parent then connection:Disconnect();return end
+        local elapsed=os.clock()-started
+        for i,label in ipairs(letters)do
+            local progress=math.clamp((elapsed-(i-1)*.065)/.27,0,1)
+            local eased=1-(1-progress)^3
+            label.TextTransparency=1-eased
+            label.Position=UDim2.fromOffset(90+(i-1)*42,15+(1-eased)*12)
+        end
+        line.Size=UDim2.fromOffset(158*math.clamp((elapsed-.18)/.36,0,1),2)
+        if elapsed>=.7 then connection:Disconnect()end
+    end)
+    return gui
+end
+]=]
 function Style.BrandText(text)
     if type(text)~="string"then return text end
     return(text:gsub("[Rr][Aa][Yy][Ff][Ii][Ee][Ll][Dd]","AIOS"))
 end
 function Style.BrandSource(source)
-    -- The library's startup wordmark is an image, not a translatable label.
-    -- Replace only its known constructor; keep the library's source/license intact.
-    local branded,bannerCount=source:gsub("local n=Instance%.new%s*'ImageLabel'n%.Name='Banner'",
-        "local n=Instance.new'TextLabel'n.Name='Banner'n.Text='AIOS'n.Font=Enum.Font.GothamBold n.TextSize=36 n.TextColor3=Color3.fromRGB(244,151,58)",1)
-    local imageCount
-    branded,imageCount=branded:gsub("n%.Image=g%.resolve%(i%.icons%.banner%)","",1)
-    if bannerCount==1 and imageCount==1 then source=branded end
+    local branded,count=source:gsub("local function l%(%)local m=Instance%.new'ScreenGui'.-return m end function k%.CreateWindow",
+        "local function l()return _AiosBuildSplash(f.guiContainer,i.displayOrder.banner)end function k.CreateWindow",1)
+    if count==1 then
+        source="local _AiosBuildSplash=(function()\n"..splashSource.."\nend)()\n"..branded
+        source=source:gsub("task.wait%(0%.5%)o:Destroy%(%)task.wait%(0%.5%)","task.wait(0.85)o:Destroy()task.wait(0.05)",1)
+    end
     return(source:gsub("name='Rayfield Settings'","name='AIOS Settings'",1))
+end
+function Style.Finalize(window)
+    -- Remove the release-notes heading and card, keeping functional quick links.
+    for _,tab in ipairs(window.tabs)do
+        for i=#(tab.elements or{}),1,-1 do
+            local control=tab.elements[i]
+            local name=tostring(control.name or""):lower()
+            if name=="what's new"or name=="latest update - easier farming"then
+                table.remove(tab.elements,i)
+                window:DisconnectMany(control,control.connections)
+                if control.descriptor and control.descriptor.main then window:DestroySubtree(control.descriptor.main)end
+                if control.main then window:DestroySubtree(control.main)end
+            end
+        end
+    end
 end
 Style.Theme = {
     WindowColor=ColorSequence.new(rgb(18,21,28),rgb(29,31,39)),
@@ -578,10 +677,10 @@ function Style.Install(window)
     window.AiosScale=uiScale
     local layout={}
     for key,value in pairs(window.layout)do layout[key]=value end
-    layout.railWidth=240
+    layout.railWidth=260
     layout.railCollapsedWidth=64
-    layout.railCollapseBelow=640
-    layout.rowHeight=52
+    layout.railCollapseBelow=0
+    layout.rowHeight=46
     layout.rowSpacing=4
     layout.rowCornerRadius=10
     layout.rowInset=9
@@ -594,13 +693,26 @@ function Style.Install(window)
         local title=tab.topbarItemTitle
         if not title or tab.neglectSelector then return end
         local bounds=title.TextBounds
-        local textHeight=math.max(22,bounds and bounds.Y or 22)
-        local collapsed=window.size and window.size.X.Offset<layout.railCollapseBelow
-        local inset=collapsed and 0 or layout.rowPadding
-        if tab.topbarItem then tab.topbarItem.Size=UDim2.new(1,-layout.rowInset*2,0,math.max(layout.rowHeight,textHeight+12))end
+        local textHeight=math.max(24,(bounds and bounds.Y or 20)+4)
+        local inset=layout.rowPadding
+        if tab.topbarItem then tab.topbarItem.Size=UDim2.new(1,-layout.rowInset*2,0,math.max(layout.rowHeight,textHeight+14))end
         if tab.topbarItemContainer then
-            tab.topbarItemContainer.Size=UDim2.new(1,-inset,0,textHeight)
+            tab.topbarItemContainer.Size=UDim2.new(1,-inset*2,0,textHeight)
+            tab.topbarItemContainer.Position=UDim2.new(0,inset,.5,0)
+            tab.topbarItemContainer.AnchorPoint=Vector2.new(0,.5)
         end
+        local icon=tab.topbarItemIcon
+        local textX=icon and layout.rowIconSize+10 or 0
+        if icon then
+            icon.Size=UDim2.fromOffset(layout.rowIconSize,layout.rowIconSize)
+            icon.Position=UDim2.fromScale(0,.5)
+            icon.AnchorPoint=Vector2.new(0,.5)
+        end
+        if tab.topbarItemInitial then tab.topbarItemInitial.Visible=false end
+        title.Visible=true
+        title.Position=UDim2.new(0,textX,.5,0)
+        title.AnchorPoint=Vector2.new(0,.5)
+        title.Size=UDim2.new(1,-textX,0,textHeight)
     end
     local applyRail=window._applyRailWidth
     window._applyRailWidth=function(self)
@@ -637,11 +749,12 @@ function Style.Install(window)
     window._applyWindowSize=function(self)
         if self.unloaded then return end
         local view=viewport()
-        local width=math.max(220,math.min(960,(view.X-24)/scale))
-        local height=math.max(180,math.min(600,(view.Y-32)/scale,view.Y*0.9/scale))
+        local width=math.max(220,math.min(1180,(view.X-24)/scale,view.X*.94/scale))
+        local height=math.max(180,math.min(760,(view.Y-24)/scale,view.Y*.94/scale))
         local size=UDim2.fromOffset(math.floor(width),math.floor(height))
         local changed=size~=self.size
         self.size=size
+        layout.railWidth=math.floor(math.clamp(width*.23,150,260))
         self:_applyRailWidth()
         if self.hidden or self.minimised or self.animating or self._revealing then
             self._pendingResize=self._pendingResize or changed
@@ -674,18 +787,25 @@ function Style.Install(window)
         position=UDim2.fromOffset(math.clamp(x,30,math.max(30,view.X-30)),math.clamp(y,30,math.max(30,view.Y-30)))
         return position,UDim2.fromOffset(physicalSize/scale,physicalSize/scale)
     end
-    window:Create("TextLabel",{
-        Name="AiosLogoA",Text="A",Font=Enum.Font.GothamBold,TextSize=30,
-        BackgroundTransparency=1,Size=UDim2.fromScale(1,1),
-        ZIndex=window.collapsedInteract.ZIndex+1,Active=false,Parent=window.collapsedInteract,
-    },{TextColor3="AccentColor"})
+    drawLogo(function(class,props)return window:Create(class,props)end,window.collapsedInteract,44,window.collapsedInteract.ZIndex+1)
+    if window.topContainer then
+        if window.topbarIcon then window.topbarIcon.Visible=false end
+        local host=window:Create("Frame",{Name="AiosHeaderLogo",Size=UDim2.fromOffset(32,32),LayoutOrder=0,
+            BackgroundTransparency=1,Parent=window.topContainer})
+        drawLogo(function(class,props)return window:Create(class,props)end,host,30,2)
+    end
 
     local function styleTab(tab)
         if tab._AiosRow or tab.neglectSelector then return end
         tab._AiosRow=true
+        if tab.topbarItemLayout and tab.topbarItem then
+            local holder=window:Create("Frame",{Name="AiosLayoutStore",Visible=false,Size=UDim2.fromOffset(0,0),
+                BackgroundTransparency=1,Parent=tab.topbarItem})
+            tab.topbarItemLayout.Parent=holder
+        end
         local title=tab.topbarItemTitle
         if title then
-            title.AutomaticSize=Enum.AutomaticSize.Y
+            title.AutomaticSize=Enum.AutomaticSize.None
             title.Size=UDim2.new(1,-36,0,24)
             title.TextSize=17
             title.TextWrapped=true
@@ -803,6 +923,7 @@ local function featureClosure(prototype, upvalues)
             NativeSettings = upvalues[2][1]
             NativeSave = upvalues[12][1]
             NativeFeatures = upvalues[17][1]
+            AiosPresentation.Finalize(NativeWindow)
         elseif prototype.id == 55 and OnEngineUnload then OnEngineUnload() end
         return _qqugerks(results, 1, results.n)
     end
@@ -844,7 +965,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: antarmuka mesin fitur belum tersedia.")
-local API = {Version="0.6.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.7.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 function API.State()return NativeControl("state")end
 function API.Settings()return NativeSettings end
 function API.Set(key,value)
@@ -876,9 +997,17 @@ function API.SetRotation(ids)
 end
 function API.ShowAdvanced(visible)
     if NativeWindow.unloaded then return false end
-    NativeWindow.hidden=not visible
-    NativeWindow.screenGui.Enabled=visible
-    if visible and NativeWindow.main then NativeWindow.main.Visible=true end
+    NativeWindow.screenGui.Enabled=true
+    NativeWindow:_applyWindowSize()
+    if visible then
+        NativeWindow:Show()
+        if not NativeWindow.animating and not NativeWindow.minimised then
+            NativeWindow.main.Size=NativeWindow.size
+            NativeWindow.main.Visible=true
+        end
+    else
+        NativeWindow:Hide()
+    end
     return true
 end
 local customUI
@@ -890,7 +1019,8 @@ function API.Unload()
     if NativeUnload then NativeUnload()end
     OnEngineUnload()
 end
-API.ShowAdvanced(true)
+-- The UI loader schedules its first reveal after the AIOS opening animation.
+-- Do not pre-mark the window as visible before its native Show() runs.
 global.AiosPixelLineage=API
 local uiChunk,uiError=loadstring(BUILD_UI_SOURCE,"AiosEditableUI")
 assert(uiChunk,uiError)
@@ -898,7 +1028,7 @@ local buildUI=uiChunk()
 assert(type(buildUI)=="function","UI source must return function(API)")
 customUI=buildUI(API)
 return API
-]=]
+]==]
 
 local function quoteSource(value)
     return string.format("%q",value)
