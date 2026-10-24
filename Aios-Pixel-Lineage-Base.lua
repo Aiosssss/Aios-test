@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.9 - sales during active battles and class-aware gear comparisons
+-- AIOS HUB / Pixel Lineage 0.9.1 - sale reconciliation and manual queue recovery
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -368,12 +368,30 @@ return function(deps)
         if #plan.rows==0 then return nil,"Belum ada gear yang bisa dijual dipilih."end
         return plan
     end
+    function service:Check(recover,quiet)
+        if not alive or self.running or not deps.host then return false end
+        local ok,message
+        if recover then
+            ok,message=deps.host.Recover()
+            if ok then
+                self.selected={}
+                if deps.recovered then deps.recovered()end
+            end
+        else
+            ok,message=deps.host.Check()
+        end
+        if message then
+            self.message=message
+            if not quiet and deps.changed then deps.changed()end
+        end
+        return ok
+    end
     function service:Start(plan)
         if not alive or self.running or not plan or plan.used then return false end
-        plan.used=true
         if not deps.host then emit("Jalur jual game belum tersedia.");return false end
         local token,reason=deps.host.Acquire()
         if not token then emit(reason);return false end
+        plan.used=true
         self.running=true;stop=false
         emit("Memulai penjualan "..#plan.rows.." gear...")
         deps.spawn(function()
@@ -382,7 +400,11 @@ return function(deps)
             local ok,err=pcall(function()
                 for _,expected in ipairs(plan.rows)do
                     if not alive or stop then break end
-                    while alive and not stop and deps.host.Delay()>0 do deps.wait(.2)end
+                    local delayDeadline=deps.clock()+10
+                    while alive and not stop and deps.host.Delay()>0 do
+                        if deps.clock()>=delayDeadline then error("Jeda transaksi belum selesai. Periksa transaksi, lalu coba lagi.",0)end
+                        deps.wait(.2)
+                    end
                     if not alive or stop then break end
                     local snapshot=deps.read()
                     if not snapshot.ready or snapshot.scope~=plan.scope then
@@ -395,11 +417,11 @@ return function(deps)
                     end
                     local ready,why=deps.host.Ready(token)
                     if not ready then error(why,0)end
-                    outstanding=true
-                    local sent,message=deps.host.Send(token,row)
+                    local sent,message,uncertain=deps.host.Send(token,row)
+                    outstanding=sent or uncertain==true
                     if not sent then error(message,0)end
                     emit("Menunggu konfirmasi: "..row.name)
-                    local deadline=deps.clock()+8
+                    local deadline=deps.clock()+(deps.host.Timeout or 15)
                     local done=false
                     repeat
                         deps.wait(.25)
@@ -410,7 +432,7 @@ return function(deps)
                         end
                         if deps.host.Confirm(token,row.uid)then done=true;break end
                     until deps.clock()>=deadline
-                    if not done then error("Belum ada konfirmasi server. Proses berhenti tanpa mengirim ulang; periksa bag game.",0)end
+                    if not done then error("Hasil jual belum terkonfirmasi. Buka bag game, tekan Refresh, lalu Periksa / pulihkan jual bila masih macet.",0)end
                     outstanding=false
                     confirmed=confirmed+1;self.selected[row.uid]=nil
                     emit(string.format("Terkonfirmasi %d/%d gear.",confirmed,#plan.rows))
@@ -606,7 +628,8 @@ end)()
     local update
     local function saleChanged()if update then update(false)end end
     sales=makeSales({read=reader.Read,host=API.InventoryHost,spawn=task.spawn,wait=task.wait,clock=os.clock,
-        changed=saleChanged,finished=function()if update then update(true)end end})
+        changed=saleChanged,recovered=function()API.Set("AutoSell",false)end,
+        finished=function()if update then update(true)end end})
     local actions={isSelected=function(uid)return uid and sales.selected[uid]==true end,
         select=function(row)
             if not sales:Toggle(row)and not row.sellable then
@@ -650,6 +673,16 @@ end)()
             options={{text="Batal"},{text="Jual gear",style="danger",callback=function()sales:Start(plan)end}},dismissable=true})
     end})
     transactions:CreateButton({name="Hentikan jual",callback=function()if sales.running then sales:Stop()end end})
+    tab:CreateButton({name="Periksa / pulihkan jual",
+        description="Periksa hasil transaksi yang macet. Pemulihan mematikan Auto Sell dan mengosongkan pilihan; pilih ulang gear untuk menjual lagi.",
+        callback=function()
+            if sales.running then
+                window:Popup({title="Penjualan masih berjalan",content="Tunggu hasil transaksi atau tekan Hentikan jual terlebih dahulu.",dismissable=true})
+                return
+            end
+            sales:Check(true)
+            if update then update(true)end
+        end})
     listing=makeList(window,tab)
     if type(API.Settings)=="function"and type(API.Set)=="function"then
         local settings=API.Settings()
@@ -667,6 +700,7 @@ end)()
     update=function(read)
         if not alive or window.unloaded then return end
         if read then
+            sales:Check(false,true)
             local ok,result=pcall(reader.Read)
             snapshot=ok and result or{ready=false,rows={},message="Inventory belum bisa dibaca. Buka bag game, lalu coba Refresh."}
             sales:Prune(snapshot)
@@ -1346,7 +1380,7 @@ local function featureClosure(prototype, upvalues)
     local function call(...)
         -- Manual inventory batches share the native pending state. Defer native
         -- Auto Sell dispatch until that finite batch has released its reservation.
-        if prototype.id==75 and InventorySaleReservation.token then return false end
+        if prototype.id==75 and(InventorySaleReservation.token or InventorySaleReservation.uncertain)then return false end
         if prototype.id==175 then
             local uiModule=upvalues[1][1]
             if not uiModule._AiosSingleWindow then
@@ -1409,32 +1443,92 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: antarmuka mesin fitur belum tersedia.")
-local API = {Version="0.9.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.9.1",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
 return function(cells,life,reservation)
-    local host={}
+    local host={Timeout=15}
     local function value(index)return cells and cells[index]and cells[index][1]end
+    local function scope(p)
+        return tostring(p.heroSlot).."/"..tostring(p.statContext).."/"..tostring(p.tormentMode)
+    end
+    local function contains(bag,uid)
+        if bag[uid]~=nil then return true end
+        for key in pairs(bag)do if tostring(key)==tostring(uid)then return true end end
+        return false
+    end
     function host.Profile()return value(3)end
-    local function gate()
+    local function uncertain(request,message)
+        local sale=value(2)
+        reservation.uncertain=request
+        if sale.pending==request.pending then sale.pending=nil end
+        sale.blocked=true
+        sale.message=message
+        return false,message
+    end
+    local function reconcile()
+        local sale=value(2)
+        if type(sale)~="table"then return false,"Jalur jual game belum tersedia."end
+        local request=reservation.transaction
+        if not request then
+            if sale.pending then return false,"Masih menunggu hasil penjualan sebelumnya. Tekan Periksa / pulihkan jual setelah hasil diperiksa."end
+            if sale.blocked then return false,"Transaksi sebelumnya belum terkonfirmasi. Buka bag, lalu tekan Periksa / pulihkan jual."end
+            return true
+        end
+        local p=host.Profile()
+        if type(p)~="table"or type(p.gearBag)~="table"then
+            return false,"Data inventory belum tersedia untuk memeriksa hasil jual."
+        end
+        if scope(p)~=request.scope then
+            return uncertain(request,"Karakter atau mode berubah saat transaksi. Kembali ke karakter dan mode asal untuk memeriksa hasil jual.")
+        end
+        if sale.pending and sale.pending~=request.pending then
+            return false,"Ada transaksi lain yang masih berjalan; hasil jual belum dapat dipastikan."
+        end
+        if not contains(p.gearBag,request.uid)then
+            if not request.completed then
+                request.completed=true
+                sale.sold=(sale.sold or 0)+1
+                sale.gold=(sale.gold or 0)+request.price
+                request.token.confirmed[request.uid]=true
+            end
+            if sale.pending==request.pending then sale.pending=nil end
+            sale.blocked=false
+            reservation.uncertain=nil
+            reservation.transaction=nil
+            sale.message="Terkonfirmasi dari inventory: "..request.name
+            return true,sale.message,request.uid
+        end
+        if reservation.uncertain or os.clock()-request.at>=host.Timeout then
+            local detail=request.dispatchError and(request.dispatchError..". ")or""
+            return uncertain(request,detail.."Hasil jual "..request.name.." belum terkonfirmasi; gear masih terdata. Buka bag, Refresh, lalu Periksa / pulihkan jual.")
+        end
+        return false,"Menunggu konfirmasi: "..request.name
+    end
+    local function baseGate()
         if not life()then return false,"Menu sudah ditutup."end
         if not cells or type(value(2))~="table"or not value(13)then return false,"Jalur jual game belum tersedia."end
-        local craft,sale=value(1),value(2)
+        local craft=value(1)
         if craft and(craft.pending or craft.inFlight)then return false,"Tunggu transaksi lain selesai."end
-        if sale.pending then return false,"Masih menunggu hasil penjualan sebelumnya."end
-        if sale.blocked then return false,"Penjualan sebelumnya belum terkonfirmasi. Periksa bag game dan status Auto Sell dahulu."end
         if value(9)and value(9).blocked or value(10)then return false,"Proteksi atau batas sesi sedang aktif."end
         local ready=value(5)
         if type(ready)~="function"or not ready()then return false,"Tunggu data battle lengkap atau transisi selesai, lalu coba lagi."end
-        if type(value(3))~="table"then return false,"Data inventory belum tersedia."end
+        local p=host.Profile()
+        if type(p)~="table"or type(p.gearBag)~="table"then return false,"Data inventory belum tersedia."end
         return true
     end
+    local function gate()
+        local ok,reason=baseGate()
+        if not ok then return false,reason end
+        return reconcile()
+    end
+    function host.Check()return reconcile()end
     function host.Acquire()
         if reservation.token then return nil,"Penjualan masih berjalan."end
         local ok,reason=gate()
         if not ok then return nil,reason end
-        local token={}
+        local token={confirmed={}}
         reservation.token=token
         return token
     end
@@ -1442,40 +1536,70 @@ return function(cells,life,reservation)
         if reservation.token~=token then return false,"Penjualan sudah dihentikan."end
         return gate()
     end
-    function host.Delay()return math.max(0,(value(2).nextAt or 0)-os.clock())end
+    function host.Delay()
+        local sale=value(2)
+        return type(sale)=="table"and math.max(0,(sale.nextAt or 0)-os.clock())or 0
+    end
     function host.Send(token,row)
         local ok,reason=host.Ready(token)
         if not ok then return false,reason end
         if host.Delay()>0 then return false,"Tunggu jeda transaksi."end
         local sale=value(2)
         local pending={uid=row.uid,name=row.name,price=row.sellPrice,at=os.clock()}
+        local request={uid=row.uid,name=row.name,price=row.sellPrice,at=pending.at,
+            scope=scope(host.Profile()),pending=pending,token=token}
+        reservation.transaction=request
         sale.pending=pending
         sale.nextAt=os.clock()+1
         sale.message="Selling "..row.name
-        local sent=pcall(function()value(13):FireServer("GearSell",{uid=row.uid,discard=false})end)
+        local sent,err=pcall(function()value(13):FireServer("GearSell",{uid=row.uid,discard=false})end)
         if not sent then
-            sale.blocked=true
-            sale.message="Sale dispatch uncertain; inspect native inventory before retrying"
-            return false,"Pengiriman belum pasti. Proses dihentikan; periksa bag game."
+            request.dispatchError="Pengiriman jual bermasalah: "..tostring(err):sub(1,180)
+            uncertain(request,request.dispatchError)
+            return false,sale.message,true
         end
         return true
     end
     function host.Confirm(token,uid)
-        local sale=value(2)
-        if reservation.token~=token or not sale.pending or sale.pending.uid~=uid then return false end
-        local p=host.Profile()
-        if type(p)~="table"or type(p.gearBag)~="table"or p.gearBag[uid]~=nil then return false end
-        sale.sold=(sale.sold or 0)+1
-        sale.gold=(sale.gold or 0)+(sale.pending.price or 0)
-        sale.pending=nil
-        sale.message="Confirmed: "..uid
-        return true
+        if reservation.token~=token then return false end
+        if token.confirmed[uid]then return true end
+        local request=reservation.transaction
+        if not request or request.token~=token or request.uid~=uid then return false end
+        reconcile()
+        return token.confirmed[uid]==true
     end
     function host.Unconfirmed(token)
-        if reservation.token==token then
-            value(2).blocked=true
-            value(2).message="Sale unconfirmed; inspect native inventory before retrying"
+        local request=reservation.transaction
+        if reservation.token==token and request and request.token==token then
+            uncertain(request,"Hasil jual belum terkonfirmasi. Buka bag, Refresh, lalu Periksa / pulihkan jual.")
         end
+    end
+    function host.Recover()
+        if reservation.token then return false,"Penjualan masih berjalan."end
+        local ok,reason=baseGate()
+        if not ok then return false,reason end
+        local request=reservation.transaction
+        if request and scope(host.Profile())~=request.scope then
+            return false,"Kembali ke karakter dan mode asal sebelum memulihkan transaksi."
+        end
+        local sale=value(2)
+        if request and sale.pending and sale.pending~=request.pending then
+            return false,"Ada transaksi lain yang masih berjalan; antrean belum dapat dipulihkan."
+        end
+        local _,message,confirmed=reconcile()
+        local pending=reservation.transaction or sale.pending
+        if pending and os.clock()-(pending.at or os.clock())<host.Timeout then
+            return false,"Transaksi masih baru. Tunggu hingga "..host.Timeout.." detik sebelum memulihkan antrean."
+        end
+        local settings=value(6)
+        if type(settings)=="table"then settings.AutoSell=false end
+        sale.pending=nil
+        sale.blocked=false
+        sale.nextAt=os.clock()+1
+        reservation.transaction=nil
+        reservation.uncertain=nil
+        sale.message=confirmed and(message..". Auto Sell dimatikan.")or"Antrean jual dipulihkan. Auto Sell dimatikan; pilih ulang gear dan periksa pratinjau sebelum menjual."
+        return true,sale.message
     end
     function host.Release(token)if reservation.token==token then reservation.token=nil end end
     return host
