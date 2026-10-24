@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.8 - inventory gear sales, batch confirmation and native Auto Sell controls
+-- AIOS HUB / Pixel Lineage 0.9 - sales during active battles and class-aware gear comparisons
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -74,6 +74,15 @@ return function(API)
 -- Inventory snapshots only; no equipment, sale, stash, or network mutations.
 return function(deps)
     local reader={}
+    local function finite(value)return type(value)=="number"and value==value and math.abs(value)<math.huge end
+    local function effectsOf(described)
+        local effects,complete={},type(described.effects)=="table"
+        for key,value in pairs(type(described.effects)=="table"and described.effects or{})do
+            if type(key)=="string"and finite(value)then effects[key]=value end
+            if type(value)=="number"and not finite(value)then complete=false end
+        end
+        return effects,complete
+    end
     local rarityRank={Common=1,Uncommon=2,Rare=3,Epic=4,Legendary=5,Secret=6,Mythic=7,Divine=8}
     function reader.Read()
         local profile,reason=deps.profile()
@@ -85,7 +94,7 @@ return function(deps)
         gear=type(gear)=="table"and gear or{}
         local rows,equipped,vanity={},{},{}
         local itemKinds,itemTotal,gearTotal,equippedTotal=0,0,0,0
-        for _,uid in pairs(type(profile.gear)=="table"and profile.gear or{})do equipped[tostring(uid)]=true end
+        for slot,uid in pairs(type(profile.gear)=="table"and profile.gear or{})do equipped[tostring(uid)]=tostring(slot)end
         for _,uid in pairs(type(profile.vanity)=="table"and profile.vanity or{})do vanity[tostring(uid)]=true end
         local bagUsed=0
         for id,value in pairs(type(profile.inventory)=="table"and profile.inventory or{})do
@@ -111,7 +120,7 @@ return function(deps)
                     if ok and type(value)=="table"then described=value end
                 end
                 described=described or definition
-                local worn=equipped[tostring(uid)]==true
+                local worn=equipped[tostring(uid)]~=nil
                 local displayVanity=vanity[tostring(uid)]==true
                 local locked=not not(piece.locked or described.locked)
                 local protected=not not(piece.bound or definition.bound or definition.starter or piece.starter)
@@ -133,13 +142,19 @@ return function(deps)
                         sellable=true;sellPrice=price
                     else sellReason="Tidak bisa dijual menurut aturan game"end
                 end
+                local effects,effectsReady=effectsOf(described)
                 rows[#rows+1]={id=tostring(piece.base),uid=tostring(uid),
                     name=tostring(described.displayName or described.name or definition.name or piece.base),
                     kind="gear",quantity=1,equipped=worn,vanity=displayVanity,locked=locked,
                     sellable=sellable,sellPrice=sellPrice,sellReason=sellReason,
                     rarity=tostring(described.rarity or definition.rarity or""),
                     tier=tonumber(described.tier or definition.tier),
-                    category=tostring(described.gearKind or definition.gearKind or"Gear")}
+                    category=tostring(described.gearKind or definition.gearKind or definition.kind or"Gear"),
+                    equippedSlot=equipped[tostring(uid)],
+                    weaponType=described.weaponType or definition.weaponType,
+                    class=described.class or definition.class,
+                    effects=effects,effectsReady=effectsReady,
+                    power=described.power,set=definition.set,affixes=described.affixes}
                 gearTotal=gearTotal+1
                 if worn then equippedTotal=equippedTotal+1 end
             end
@@ -161,6 +176,7 @@ return function(deps)
         return {ready=true,rows=rows,itemKinds=itemKinds,itemTotal=itemTotal,gearTotal=gearTotal,
             equippedTotal=equippedTotal,heroSlot=profile.heroSlot,statContext=profile.statContext,
             bagUsed=bagUsed,bagLimit=bagLimit,
+            baseClass=profile.baseClass,
             scope=tostring(profile.heroSlot).."/"..tostring(profile.statContext).."/"..tostring(profile.tormentMode)}
     end
     function reader.Filter(snapshot,query,category)
@@ -192,6 +208,21 @@ return function(window,tab)
     list.empty=window:Create("TextLabel",{Name="Empty",Text="Buka tab Inventory atau tekan Refresh untuk membaca item.",TextWrapped=true,
         FontFace=window.theme.Font,TextSize=14,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Parent=list.main},{TextColor3="ContentColor"})
     function list:_setShown(shown)self.main.Visible=shown end
+    local function fitPopup(popup)
+        local camera=workspace.CurrentCamera
+        local card=popup and popup.card
+        local content=card and card:FindFirstChild("Content")
+        if not camera or not card or not content then return end
+        local viewport=camera.ViewportSize
+        local scale=math.min(1,math.max(.5,(viewport.X-24)/math.max(1,card.Size.X.Offset)))
+        if scale<1 then window:Create("UIScale",{Scale=scale,Parent=card})end
+        local excess=math.max(0,card.Size.Y.Offset-(viewport.Y-24)/scale)
+        local removed=math.min(excess,math.max(0,content.Size.Y.Offset-48))
+        if removed>0 then
+            content.Size=UDim2.new(content.Size.X.Scale,content.Size.X.Offset,0,content.Size.Y.Offset-removed)
+            card.Size=UDim2.fromOffset(card.Size.X.Offset,card.Size.Y.Offset-removed)
+        end
+    end
     local function details(row)
         local lines={"Jumlah: "..tostring(row.quantity),"ID: "..row.id}
         if row.rarity~=""then lines[#lines+1]="Rarity: "..row.rarity end
@@ -224,7 +255,15 @@ return function(window,tab)
             Position=UDim2.new(1,-10,0,6),BackgroundTransparency=1,Parent=cell.main},{TextColor3="ContentColor"})
         window:ConnectFor(cell,cell.main.Activated,function()
             local row=cell.row
-            if row then window:Popup({title=row.name,subtitle=row.category,content=details(row),dismissable=true})end
+            if row then
+                local content=details(row)
+                if row.kind=="gear"and self.actions and self.actions.compare then
+                    local ok,result=pcall(self.actions.compare,row)
+                    content=content.."\n\n"..(ok and tostring(result)or"Perbandingan belum tersedia. Tekan Refresh.")
+                end
+                local popup=window:Popup({title=row.name,subtitle=row.category,content=content,dismissable=true})
+                fitPopup(popup)
+            end
         end)
         window:ConnectFor(cell,cell.pick.Activated,function()
             if cell.row and self.actions and self.actions.select then self.actions.select(cell.row)end
@@ -252,7 +291,10 @@ return function(window,tab)
             cell.pick.Text=row.sellable and(selected and"✓"or"□")or"–"
             cell.pick.TextColor3=selected and Color3.fromRGB(255,171,78)or Color3.fromRGB(154,162,177)
             cell.name.Text=row.name
-            cell.quantity.Text="×"..tostring(row.quantity)
+            cell.quantity.Text=row.kind=="gear"and"Bandingkan"or"×"..tostring(row.quantity)
+            cell.quantity.Size=UDim2.fromOffset(row.kind=="gear"and 82 or 64,22)
+            cell.quantity.TextSize=row.kind=="gear"and 11 or 14
+            cell.name.Size=UDim2.new(1,row.kind=="gear"and-144 or-128,0,22)
             cell.meta.Text=table.concat(info," · ")
             cell.meta.TextColor3=color
             cell.stroke.Color=selected and Color3.fromRGB(255,171,78)or color
@@ -392,7 +434,168 @@ return function(deps)
 end
 
 end)()
+    local makeCompare=(function()
+-- Read-only comparisons. Compare each stat in its own unit; do not add flat
+-- attack, percentage points and health into an invented DPS/gear score.
+return function(deps)
+    local compare={}
+    local function key(value)return tostring(value or""):lower():gsub("[%s_%-]","")end
+    local function finite(value)return type(value)=="number"and value==value and math.abs(value)<math.huge end
+    local function findClass(classes,id)
+        if type(classes)~="table"then return nil end
+        if type(classes[id])=="table"then return classes[id]end
+        for index,value in pairs(classes)do
+            if type(value)=="table"and(key(index)==key(id)or key(value.id)==key(id)or key(value.name)==key(id))then return value end
+        end
+    end
+    function compare.Class(snapshot)
+        local config=deps.catalogs()
+        local base,super=deps.class()
+        base=base or snapshot.baseClass
+        if base==""then base=nil end
+        return {id=base,name=tostring(base or"Belum terbaca"),super=super,
+            definition=base and findClass(config.Classes,base)or nil}
+    end
+    local function compatible(row,class)
+        if key(row.category)~="weapon"then return true,"Slot "..row.category end
+        if not class.id then return nil,"Class belum terbaca"end
+        if type(row.class)=="string"and row.class~=""then
+            return key(row.class)==key(class.id),"Syarat class: "..row.class
+        end
+        local expected=class.definition and class.definition.weaponType
+        if type(expected)=="string"and type(row.weaponType)=="string"then
+            return key(expected)==key(row.weaponType),"Senjata class: "..expected.."; gear: "..row.weaponType
+        end
+        return nil,"Kecocokan senjata belum bisa dipastikan dari katalog"
+    end
+    local function priorities(class,focus)
+        local keys={}
+        local function add(list)for _,name in ipairs(list)do keys[name]=true end end
+        if focus=="Bertahan"then
+            add({"healthFlat","healthPercent","damageReduction","bluntDamageReduction","magicDamageReduction",
+                "dodgeChance","dodgePercent","battleEndHealingPercent","healingPercent"})
+        elseif focus=="Loot"then add({"lootRate"})
+        else
+            add({"attackFlat","attackPercent","skillDamagePercent","critChance","critDamage","critDamagePercent",
+                "criticalChance","criticalDamage","criticalDamagePercent"})
+            if key(class.id)=="mage"then add({"magicDamagePercent"})end
+            if key(class.id)=="fist"then add({"fistDamagePercent"})end
+            local damageType=class.definition and class.definition.damageType
+            if type(damageType)=="string"then keys[damageType:sub(1,1):lower()..damageType:sub(2).."DamagePercent"]=true end
+        end
+        return keys
+    end
+    local function label(gear,id)
+        local name=(gear.StatNames or{})[id]
+        if type(name)=="table"then name=name[1]end
+        return type(name)=="string"and name or id
+    end
+    local function number(value)return string.format("%.4g",value)end
+    local function valueText(gear,id,value)
+        if type(gear.StatValueText)=="function"then
+            local ok,text=pcall(gear.StatValueText,id,value)
+            if ok and type(text)=="string"then return text end
+        end
+        return number(value)
+    end
+    function compare.Build(snapshot,uid,focus)
+        focus=focus or"Damage"
+        if not snapshot.ready then return nil,"Data inventory belum tersedia. Tekan Refresh."end
+        local candidate
+        for _,row in ipairs(snapshot.rows)do if row.kind=="gear"and row.uid==uid then candidate=row;break end end
+        if not candidate then return nil,"Gear sudah berubah atau hilang. Tekan Refresh."end
+        local class=compare.Class(snapshot)
+        local _,gear=deps.catalogs()
+        local baseline,baselines
+        baselines=0
+        for _,row in ipairs(snapshot.rows)do
+            if row.kind=="gear"and row.equipped and key(candidate.category)~="gear"and key(row.category)==key(candidate.category)then
+                baseline=row;baselines=baselines+1
+            end
+        end
+        local result={candidate=candidate,baseline=baseline,class=class,focus=focus,stats={}}
+        local canUse,why=compatible(candidate,class)
+        result.compatible=canUse
+        local lines={"Class: "..class.name..(class.super and class.super~=""and(" / "..tostring(class.super))or""),
+            "Fokus: "..focus,"Kandidat: "..candidate.name,"Slot: "..candidate.category,why}
+        if baselines>1 then baseline=nil;result.baseline=nil end
+        if not candidate.effectsReady then lines[#lines+1]="Stat kandidat belum lengkap; angka yang tampil hanya bagian yang terbaca."end
+        if baseline then lines[#lines+1]="Dipakai: "..baseline.name
+        else lines[#lines+1]=baselines>1 and"Ada beberapa gear di slot ini; pembanding perlu dipilih manual di game."or"Belum ada gear dipakai yang terbaca untuk slot ini."end
+        local selected=priorities(class,focus)
+        local union={}
+        for stat,value in pairs(candidate.effects or{})do if finite(value)then union[stat]=true end end
+        for stat,value in pairs(baseline and baseline.effects or{})do if finite(value)then union[stat]=true end end
+        local keys={}
+        for stat in pairs(union)do keys[#keys+1]=stat end
+        table.sort(keys,function(a,b)
+            if selected[a]~=selected[b]then return selected[a]==true end
+            return label(gear,a)<label(gear,b)
+        end)
+        local up,down=0,0
+        for _,stat in ipairs(keys)do
+            local current=(baseline and baseline.effects or{})[stat]or 0
+            local nextValue=(candidate.effects or{})[stat]or 0
+            local delta=nextValue-current
+            local primary=selected[stat]==true
+            if primary and math.abs(delta)>1e-8 then if delta>0 then up=up+1 else down=down+1 end end
+            result.stats[#result.stats+1]={key=stat,name=label(gear,stat),current=current,value=nextValue,delta=delta,primary=primary}
+        end
+        local complete=candidate.effectsReady and baseline and baseline.effectsReady
+        local verdict
+        if canUse==false then verdict="Tidak cocok untuk class ini"
+        elseif candidate.equipped then verdict="Ini gear yang sedang dipakai"
+        elseif baselines>1 then verdict="Pembanding slot belum pasti"
+        elseif not baseline then verdict="Belum ada pembanding di slot ini"
+        elseif not complete then verdict="Stat belum lengkap; belum bisa menilai"
+        else
+            local oldCompatible=compatible(baseline,class)
+            if oldCompatible==false and canUse==true then verdict="Kandidat lebih cocok untuk class ini"
+            elseif up>0 and down==0 then verdict="Kandidat lebih bagus untuk fokus "..focus:lower()
+            elseif down>0 and up==0 then verdict="Gear dipakai lebih bagus untuk fokus "..focus:lower()
+            elseif up>0 and down>0 then verdict="Ada pertukaran stat; cek kenaikan dan penurunannya"
+            else verdict="Stat fokus setara atau belum ada stat relevan"end
+        end
+        result.verdict=verdict
+        table.insert(lines,1,verdict)
+        lines[#lines+1]="\nSTAT: dipakai → kandidat (selisih)\n* = dipakai untuk penilaian fokus"
+        if#result.stats==0 then lines[#lines+1]="Stat rinci belum terbaca dari GearConfig.Describe."end
+        for index,stat in ipairs(result.stats)do
+            if index<=20 then
+                local values=valueText(gear,stat.key,stat.value)
+                if baseline and complete then
+                    values=valueText(gear,stat.key,stat.current).." → "..values.." ("..(stat.delta>0 and"+"or"")..number(stat.delta)..")"
+                end
+                lines[#lines+1]=(stat.primary and"* "or"")..stat.name..": "..values
+            end
+        end
+        if#result.stats>20 then lines[#lines+1]="Stat lain: "..tostring(#result.stats-20).."; lihat detail gear di bag game."end
+        local powers=gear.BuildStats and gear.BuildStats.PowerById or{}
+        local function extras(row,prefix)
+            if not row then return end
+            local extra={}
+            if row.set then extra[#extra+1]="Set "..tostring((gear.SetDisplayNames or{})[row.set]or row.set)end
+            if row.power then
+                local power=powers[row.power]
+                extra[#extra+1]="Power "..tostring(type(power)=="table"and power.name or row.power)
+            end
+            if#extra>0 then lines[#lines+1]=prefix..": "..table.concat(extra," · ")end
+        end
+        extras(baseline,"\nEfek gear dipakai");extras(candidate,"Efek kandidat")
+        lines[#lines+1]="\nSaran memakai arah perubahan stat sesuai fokus. Selisih mengikuti satuan mentah game; bonus set, power, kondisi skill dan efek affix terpisah belum dihitung sebagai DPS. Gear tidak diganti otomatis."
+        result.content=table.concat(lines,"\n")
+        return result
+    end
+    return compare
+end
+
+end)()
     local reader=makeReader({profile=profile,catalogs=catalogs,bigBag=function()return player:GetAttribute("PBBigBag")==true end})
+    local comparer=makeCompare({catalogs=catalogs,class=function()
+        return player:GetAttribute("RPGClass"),player:GetAttribute("RPGSuperClass")
+    end})
+    local compareFocus="Damage"
+    API.CompareGear=function(uid,focus)return comparer.Build(reader.Read(),uid,focus or compareFocus)end
     API.Inventory=reader.Read
     local tab=window:CreateTab({name="Inventory"})
     local alive=true
@@ -409,11 +612,18 @@ end)()
             if not sales:Toggle(row)and not row.sellable then
                 window:Popup({title="Tidak bisa dipilih",content=row.sellReason or"Jual material belum didukung.",dismissable=true})
             end
+        end,
+        compare=function(row)
+            local result,reason=API.CompareGear(row.uid)
+            return result and result.content or reason
         end}
     tab:CreateInput({name="Cari item",placeholder="Nama, ID, atau rarity",value="",forgetState=true,
         callback=function(value)query=tostring(value or"");page=1;if update then update(false)end end})
     tab:CreateDropdown({name="Tampilkan",options={"Semua","Item & material","Gear","Sedang dipakai","Bisa dijual"},value="Semua",forgetState=true,
         callback=function(value)category=type(value)=="table"and value[1]or value;page=1;if update then update(false)end end})
+    tab:CreateDropdown({name="Fokus perbandingan gear",options={"Damage","Bertahan","Loot"},value="Damage",forgetState=true,
+        description="Ketuk nama gear untuk membandingkan dengan gear dipakai di slot yang sama. Class dibaca dari karakter aktif.",
+        callback=function(value)compareFocus=type(value)=="table"and value[1]or value end})
     local toolbar=tab:CreateGroup({direction="Horizontal"})
     toolbar:CreateButton({name="Refresh",callback=function()if update then update(true)end end})
     toolbar:CreateButton({name="Sebelumnya",callback=function()page=math.max(1,page-1);if update then update(false)end end})
@@ -444,7 +654,7 @@ end)()
     if type(API.Settings)=="function"and type(API.Set)=="function"then
         local settings=API.Settings()
         autoToggle=tab:CreateToggle({name="Auto Sell gear saat farming",value=settings.AutoSell==true,forgetState=true,
-            description="Mengikuti loot rules. Jalankan farming agar Auto Sell bekerja; gear yang dilindungi tetap disimpan.",
+            description="Mengikuti loot rules, termasuk saat battle aktif. Jalankan farming agar Auto Sell bekerja; hasil menunggu pembaruan inventory.",
             callback=function(value)API.Set("AutoSell",value)end})
         rarityControl=tab:CreateDropdown({name="Batas rarity Auto Sell",value=settings.SellRarity or"Uncommon",forgetState=true,
             options={"Common","Uncommon","Rare","Epic","Legendary","Secret","Divine","All"},
@@ -487,7 +697,7 @@ end)()
         window:Connect(tab.topbarItemInteract.MouseButton1Click,function()task.defer(function()update(true)end)end)
     end
     update(false)
-    return {Destroy=function()alive=false;sales:Destroy();listing:Clear();API.Inventory=nil;API.RefreshInventory=nil end}
+    return {Destroy=function()alive=false;sales:Destroy();listing:Clear();API.Inventory=nil;API.RefreshInventory=nil;API.CompareGear=nil end}
 end
 ]=]
 -- EDITABLE UI END
@@ -496,6 +706,22 @@ local ENGINE_SOURCE=[==[-- Feature engine derived from the supplied CinderHub pa
 -- Original gameplay dispatcher retained; editable UI and public API added.
 local NativeWindow,NativeControl,NativeUnload,NativeSettings,NativeSave,NativeFeatures,OnEngineUnload,NativeSaleCells
 local InventorySaleReservation={}
+local SaleReadiness=(function()
+-- Extend only the sale gate. A replicated, populated battle is usable; an
+-- incomplete battle or an unknown active-run phase remains a transition.
+return function(cells,nativeReady)
+    if nativeReady then return true end
+    local battle=cells and cells[1]and cells[1][1]
+    local run=cells and cells[2]and cells[2][1]
+    if type(battle)~="table"or battle.id==nil or type(battle.player)~="table"then return false end
+    if type(run)=="table"and run.active then
+        local phase=run.phase
+        if phase~="battle"and phase~="choose"and phase~="event"and phase~="ended"then return false end
+    end
+    return true
+end
+
+end)()
 local _pdhfusz=(bit32 and bit32.bxor) or (bit and bit.bxor) or (function() local function _x(a,b) local r,p=0,1 for _=1,8 do local ab,bb=a%2,b%2 if ab~=bb then r=r+p end a=(a-ab)/2;b=(b-bb)/2;p=p*2 end return r end return _x end)() local _qqugerks=unpack or table.unpack local _I11I1l11=(getfenv and getfenv()) or _G local lIllllllIlII=table.pack or function(...) return {n=select("#",...),...} end 
 local _yyshygnqr={}
 _yyshygnqr[1]={id=1,np=0,va=false,nuv=0,ms=1,sp={},k={},bc={36,0,0,0,1},ready=true}
@@ -1135,6 +1361,7 @@ local function featureClosure(prototype, upvalues)
             end
         end
         local results = lIllllllIlII(l1IIIl1l1(prototype, upvalues, ...))
+        if prototype.id==74 then results[1]=SaleReadiness(upvalues,results[1]);results.n=1 end
         if prototype.id == 175 then
             NativeWindow = upvalues[5][1]
             NativeSettings = upvalues[2][1]
@@ -1182,7 +1409,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: antarmuka mesin fitur belum tersedia.")
-local API = {Version="0.8.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.9.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
@@ -1199,7 +1426,7 @@ return function(cells,life,reservation)
         if sale.blocked then return false,"Penjualan sebelumnya belum terkonfirmasi. Periksa bag game dan status Auto Sell dahulu."end
         if value(9)and value(9).blocked or value(10)then return false,"Proteksi atau batas sesi sedang aktif."end
         local ready=value(5)
-        if type(ready)~="function"or not ready()then return false,"Selesaikan pertarungan atau transisi terlebih dahulu."end
+        if type(ready)~="function"or not ready()then return false,"Tunggu data battle lengkap atau transisi selesai, lalu coba lagi."end
         if type(value(3))~="table"then return false,"Data inventory belum tersedia."end
         return true
     end
