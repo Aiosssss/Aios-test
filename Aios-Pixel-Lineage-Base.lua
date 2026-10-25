@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.10 - 3x3 inventory cards with optional UID-matched item images
+-- AIOS HUB / Pixel Lineage 0.11 - compact English UI, expanded sections and native pixel item art
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -41,7 +41,7 @@ return function(API)
         if API.InventoryHost then
             local p=API.InventoryHost.Profile()
             if type(p)=="table"then return p end
-            return nil,"Data inventory native belum tersedia. Buka bag game, lalu Refresh."
+            return nil,"Inventory data is not ready. Open the game bag, then Refresh."
         end
         local adapter=env.AiosFeatureData
         if type(adapter)=="table"and type(adapter.Profile)=="function"then
@@ -62,12 +62,12 @@ return function(API)
             if ok and type(result)=="table"then objects=result end
         end
         if type(objects)~="table"then
-            return nil,"Data inventory belum terbaca. Buka bag game, lalu Refresh. Jika tetap kosong, executor mungkin tidak mendukung pembacaan data ini."
+            return nil,"Inventory is unavailable. Open the game bag, then Refresh. If it stays empty, this executor may not support the data reader."
         end
         for _,candidate in pairs(objects)do
             if valid(candidate)then view=candidate;return rawget(view,"profile")end
         end
-        return nil,"Buka inventory/bag game sekali, lalu tekan Refresh."
+        return nil,"Open the game bag once, then press Refresh."
     end
     -- The builder inserts the inventory snapshot reader here.
     local makeReader=(function()
@@ -87,7 +87,7 @@ return function(deps)
     function reader.Read()
         local profile,reason=deps.profile()
         if type(profile)~="table"then
-            return {ready=false,rows={},message=reason or"Buka inventory/bag game sekali, lalu tekan Refresh."}
+            return {ready=false,rows={},message=reason or"Open the game bag once, then press Refresh."}
         end
         local config,gear=deps.catalogs()
         config=type(config)=="table"and config or{}
@@ -133,15 +133,15 @@ return function(deps)
                 if not starter then bagUsed=bagUsed+1 end
                 local sellable,sellPrice,sellReason=false,nil,nil
                 if worn or displayVanity or locked or protected then
-                    sellReason=worn and"Sedang dipakai"or displayVanity and"Dipakai sebagai vanity"or locked and"Terkunci"or"Gear terikat atau starter"
+                    sellReason=worn and"Equipped"or displayVanity and"Equipped as vanity"or locked and"Locked"or"Bound or starter gear"
                 elseif type(gear.CanSell)~="function"or type(gear.SellPrice)~="function"then
-                    sellReason="Validasi jual game belum tersedia"
+                    sellReason="Game sale validation is unavailable"
                 else
                     local can,allowed=pcall(gear.CanSell,piece)
                     local priced,price=pcall(gear.SellPrice,piece)
                     if can and allowed==true and priced and type(price)=="number"and price==price and price>0 and price<math.huge then
                         sellable=true;sellPrice=price
-                    else sellReason="Tidak bisa dijual menurut aturan game"end
+                    else sellReason="Cannot sell under the game's rules"end
                 end
                 local effects,effectsReady=effectsOf(described)
                 rows[#rows+1]={id=tostring(piece.base),uid=tostring(uid),
@@ -185,11 +185,11 @@ return function(deps)
         local result={}
         query=tostring(query or""):lower():match("^%s*(.-)%s*$")
         for _,row in ipairs(snapshot.rows or{})do
-            local included=category==nil or category=="Semua"
-                or category=="Item & material"and row.kind=="item"
+            local included=category==nil or category=="All"
+                or category=="Items & materials"and row.kind=="item"
                 or category=="Gear"and row.kind=="gear"
-                or category=="Bisa dijual"and row.sellable==true
-                or category=="Sedang dipakai"and row.equipped==true
+                or category=="Sellable"and row.sellable==true
+                or category=="Equipped"and row.equipped==true
             local text=(row.name.." "..row.id.." "..(row.uid or"").." "..row.rarity.." "..row.category):lower()
             if included and(query==""or text:find(query,1,true))then result[#result+1]=row end
         end
@@ -251,18 +251,27 @@ local function visual(card)
     if direct then return direct end
     for _,node in ipairs(card:GetDescendants())do
         local name=node.Name:lower()
-        if name=="icon"or name=="itemicon"or name=="gearicon"or name=="sprite"or name=="thumbnail"or name=="art"then
+        if name=="icon"or name=="iconwell"or name=="itemicon"or name=="gearicon"or name=="sprite"or name=="thumbnail"or name=="art"then
             local image=nativeImage(node)
             if image then return image end
             for _,child in ipairs(node:GetDescendants())do image=nativeImage(child);if image then return image end end
+            if node:IsA("Frame")then
+                local children=node:GetDescendants()
+                local safe=#children>0 and#children<=64
+                for _,child in ipairs(children)do
+                    if child:IsA("ViewportFrame")or child:IsA("LuaSourceContainer")then safe=false;break end
+                end
+                if safe then return{kind="pixels",node=node}end
+            end
         end
     end
 end
-function Art.Index(gui)
-    local index={uid={},id={},name={},cache={}}
+local function textKey(value)return tostring(value or""):gsub("<[^>]*>",""):match("^%s*(.-)%s*$"):lower()end
+function Art.Index(gui,ignore)
+    local index={uid={},id={},name={},text={},cache={},gui=gui}
     if not gui then return index end
     for _,node in ipairs(gui:GetDescendants())do
-        if node:IsA("GuiObject")then
+        if node:IsA("GuiObject")and(not ignore or not node:IsDescendantOf(ignore))then
             local function add(group,identity)
                 if type(identity)~="string"and type(identity)~="number"then return end
                 identity=tostring(identity);if identity==""then return end
@@ -273,6 +282,14 @@ function Art.Index(gui)
             for _,key in ipairs({"GearUid","gearUid","UID","uid"})do add("uid",node:GetAttribute(key))end
             for _,key in ipairs({"ItemId","itemId","BaseId","baseId"})do add("id",node:GetAttribute(key))end
             add("name",node.Name)
+            local focus=node:GetAttribute("PBFocusKey")
+            if type(focus)=="string"then
+                local uid=focus:match("^gear:(.+)$")
+                if uid then add("uid",uid)end
+                local id=focus:match("^item:(.+)$")
+                if id then add("id",id)end
+            end
+            if node:IsA("TextLabel")or node:IsA("TextButton")then add("text",textKey(node.Text))end
         end
     end
     return index
@@ -283,8 +300,25 @@ function Art.Find(row,index)
     local node
     if row.uid then node=index.uid[row.uid]else node=index.id[row.id]end
     if node==nil then node=index.name[row.uid or row.id]end
+    if node==nil then node=index.name[(row.uid and"gear:"or"item:")..(row.uid or row.id)]end
+    local fromText=false
+    if node==nil then node=index.text[textKey(row.name)];fromText=true end
     if not node then return end
-    if index.cache[node]==nil then index.cache[node]=visual(node)or false end
+    if index.cache[node]==nil then
+        local anchor=node
+        local found=visual(anchor)
+        if fromText then
+            for _=1,2 do
+                if found then break end
+                anchor=anchor.Parent
+                if not anchor or anchor==index.gui or anchor:IsA("ScrollingFrame")
+                    or anchor:FindFirstChildOfClass("UIGridLayout")
+                    or anchor:FindFirstChildOfClass("UIListLayout")and#anchor:GetChildren()>8 then break end
+                found=visual(anchor)
+            end
+        end
+        index.cache[node]=found or false
+    end
     return index.cache[node]or nil
 end
 return Art
@@ -297,9 +331,9 @@ return function(window,tab)
     list.main=window:Create("Frame",{Name="InventoryList",Size=UDim2.new(1,-20,0,64),
         BackgroundTransparency=1,BorderSizePixel=0,Parent=tab.tabPage})
     list.container=window:Create("Frame",{Name="Rows",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=list.main})
-    list.grid=window:Create("UIGridLayout",{CellPadding=UDim2.fromOffset(8,8),CellSize=UDim2.new(1/3,-6,0,164),
+    list.grid=window:Create("UIGridLayout",{CellPadding=UDim2.fromOffset(8,8),CellSize=UDim2.new(1/3,-6,0,144),
         FillDirection=Enum.FillDirection.Horizontal,FillDirectionMaxCells=3,SortOrder=Enum.SortOrder.LayoutOrder,Parent=list.container})
-    list.empty=window:Create("TextLabel",{Name="Empty",Text="Buka tab Inventory atau tekan Refresh untuk membaca item.",TextWrapped=true,
+    list.empty=window:Create("TextLabel",{Name="Empty",Text="Open Inventory or press Refresh to load your items.",TextWrapped=true,
         FontFace=window.theme.Font,TextSize=14,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Parent=list.main},{TextColor3="ContentColor"})
     function list:_setShown(shown)self.main.Visible=shown end
     local function fitPopup(popup)
@@ -318,27 +352,27 @@ return function(window,tab)
         end
     end
     local function details(row)
-        local lines={"Jumlah: "..tostring(row.quantity),"ID: "..row.id}
+        local lines={"Quantity: "..tostring(row.quantity),"ID: "..row.id}
         if row.rarity~=""then lines[#lines+1]="Rarity: "..row.rarity end
         if row.tier then lines[#lines+1]="Tier: "..tostring(row.tier)end
         if row.uid then lines[#lines+1]="UID: "..row.uid end
-        if row.equipped then lines[#lines+1]="Sedang dipakai"end
-        if row.vanity then lines[#lines+1]="Dipakai sebagai vanity"end
-        if row.locked then lines[#lines+1]="Terkunci"end
-        if row.sellable then lines[#lines+1]="Harga jual: "..tostring(row.sellPrice).."G"
-        elseif row.kind=="gear"then lines[#lines+1]=row.sellReason or"Tidak dapat dijual"end
+        if row.equipped then lines[#lines+1]="Equipped"end
+        if row.vanity then lines[#lines+1]="Equipped as vanity"end
+        if row.locked then lines[#lines+1]="Locked"end
+        if row.sellable then lines[#lines+1]="Sale price: "..tostring(row.sellPrice).."G"
+        elseif row.kind=="gear"then lines[#lines+1]=row.sellReason or"Cannot sell"end
         return table.concat(lines,"\n")
     end
     function list:MakeRow(order)
         local cell={connections={}}
         cell.main=window:Create("TextButton",{Name="ItemCard",Text="",AutoButtonColor=false,BorderSizePixel=0,ClipsDescendants=true,
-            LayoutOrder=order,Size=UDim2.new(1/3,-6,0,164),Parent=self.container},{BackgroundColor3="StatBackground"})
+            LayoutOrder=order,Size=UDim2.new(1/3,-6,0,144),Parent=self.container},{BackgroundColor3="StatBackground"})
         window:Create("UICorner",{CornerRadius=UDim.new(0,8),Parent=cell.main})
         cell.stroke=window:Create("UIStroke",{Transparency=.7,Thickness=1,Parent=cell.main})
         cell.pick=window:Create("TextButton",{Name="SelectForSale",Text="",AutoButtonColor=false,
             FontFace=window.theme.Font,TextSize=22,Size=UDim2.fromOffset(34,34),Position=UDim2.fromOffset(0,0),
             BackgroundTransparency=1,BorderSizePixel=0,ZIndex=2,Parent=cell.main})
-        cell.name=window:Create("TextLabel",{Name="ItemName",Text="",FontFace=window.theme.Font,TextSize=12,RichText=false,TextWrapped=true,
+        cell.name=window:Create("TextLabel",{Name="ItemName",Text="",FontFace=window.theme.Font,TextSize=14,RichText=false,TextWrapped=true,
             TextTruncate=Enum.TextTruncate.AtEnd,TextXAlignment=Enum.TextXAlignment.Center,Size=UDim2.new(1,-12,0,56),
             Position=UDim2.new(0,6,1,-126),BackgroundTransparency=1,Parent=cell.main},{TextColor3="ContentColor"})
         cell.meta=window:Create("TextLabel",{Name="ItemDetails",Text="",FontFace=window.theme.Font,TextSize=10,RichText=false,TextWrapped=true,
@@ -351,17 +385,48 @@ return function(window,tab)
             TextXAlignment=Enum.TextXAlignment.Right,Size=UDim2.new(1,-40,0,20),AnchorPoint=Vector2.new(1,0),
             Position=UDim2.new(1,-6,0,6),BackgroundTransparency=1,Parent=cell.main},{TextColor3="ContentColor"})
         function cell:LayoutImage()
-            local shown=self.row~=nil and self.image and self.image.Image~=""and self.image.IsLoaded==true
-            if self.image then self.image.Visible=not not shown end
-            self.name.Position=UDim2.new(0,6,1,shown and-82 or-126)
-            self.name.Size=UDim2.new(1,-12,0,shown and 34 or 56)
-            self.meta.Position=UDim2.new(0,6,1,shown and-46 or-61)
+            local imageShown=self.row~=nil and self.image and self.image.Image~=""and self.image.IsLoaded==true
+            local shown=imageShown or self.row~=nil and self.pixelHost~=nil
+            if self.image then self.image.Visible=not not imageShown end
+            self.name.Position=UDim2.new(0,6,1,shown and-74 or-112)
+            self.name.Size=UDim2.new(1,-12,0,shown and 32 or 48)
+            self.meta.Position=UDim2.new(0,6,1,shown and-42 or-61)
             self.meta.Size=UDim2.new(1,-12,0,shown and 18 or 32)
         end
         function cell:SetImage(art)
-            if art and not self.image then
+            local source=art and art.node
+            if self.pixelSource~=source then
+                if self.pixelHost then window:DestroySubtree(self.pixelHost);self.pixelHost=nil end
+                self.pixelSource=source
+                if source and source.Parent then
+                    local ok,clone=pcall(source.Clone,source)
+                    if ok and clone then
+                        local width=source.Size.X.Scale==0 and source.Size.X.Offset or source.AbsoluteSize.X
+                        local height=source.Size.Y.Scale==0 and source.Size.Y.Offset or source.AbsoluteSize.Y
+                        width=math.max(1,width);height=math.max(1,height)
+                        self.pixelHost=window:Create("Frame",{Name="NativeItemArt",Size=UDim2.new(1,-20,0,50),
+                            Position=UDim2.new(.5,0,0,12),AnchorPoint=Vector2.new(.5,0),BackgroundTransparency=1,ClipsDescendants=true,Parent=self.main})
+                        clone.Name="PixelArt";clone.AnchorPoint=Vector2.new(.5,.5);clone.Position=UDim2.fromScale(.5,.5)
+                        clone.Size=UDim2.fromOffset(width,height);clone.AutomaticSize=Enum.AutomaticSize.None;clone.Visible=true;clone.Active=false
+                        for _,node in ipairs(clone:GetDescendants())do
+                            if node:IsA("LuaSourceContainer")then node:Destroy()
+                            elseif node:IsA("GuiButton")then node.Active=false;node.AutoButtonColor=false end
+                        end
+                        clone.Parent=self.pixelHost
+                        local fit=window:Create("UIScale",{Scale=math.min(50/width,50/height),Parent=clone})
+                        self.pixelFit=function()
+                            if self.pixelHost then fit.Scale=math.min(math.max(1,self.pixelHost.AbsoluteSize.X)/width,50/height)end
+                        end
+                        if not self.pixelResize then
+                            self.pixelResize=window:ConnectFor(self,self.main:GetPropertyChangedSignal("AbsoluteSize"),function()if self.pixelFit then self.pixelFit()end end)
+                        end
+                        self.pixelFit()
+                    end
+                end
+            end
+            if art and art.image and not self.image then
                 self.image=window:Create("ImageLabel",{Name="ItemImage",Image="",Visible=false,BackgroundTransparency=1,
-                    Size=UDim2.new(1,-24,0,66),Position=UDim2.new(.5,0,0,12),AnchorPoint=Vector2.new(.5,0),
+                    Size=UDim2.new(1,-24,0,50),Position=UDim2.new(.5,0,0,12),AnchorPoint=Vector2.new(.5,0),
                     ScaleType=Enum.ScaleType.Fit,ResampleMode=Enum.ResamplerMode.Pixelated,Parent=self.main})
                 window:ConnectFor(self,self.image:GetPropertyChangedSignal("IsLoaded"),function()self:LayoutImage()end)
             end
@@ -380,7 +445,7 @@ return function(window,tab)
                 local content=details(row)
                 if row.kind=="gear"and self.actions and self.actions.compare then
                     local ok,result=pcall(self.actions.compare,row)
-                    content=content.."\n\n"..(ok and tostring(result)or"Perbandingan belum tersedia. Tekan Refresh.")
+                    content=content.."\n\n"..(ok and tostring(result)or"Comparison is unavailable. Press Refresh.")
                 end
                 local popup=window:Popup({title=row.name,subtitle=row.category,content=content,dismissable=true})
                 fitPopup(popup)
@@ -396,7 +461,7 @@ return function(window,tab)
         self.rows=rows
         self.actions=actions
         self.empty.Visible=#rows==0
-        self.empty.Text=message or"Tidak ada item yang cocok dengan pencarian/filter ini."
+        self.empty.Text=message or"No items match this search or filter."
         self.container.Visible=#rows>0
         for order=1,math.min(9,#rows)do
             local row=rows[order]
@@ -404,9 +469,9 @@ return function(window,tab)
             local color=row.equipped and Color3.fromRGB(126,219,169)or colors[row.rarity]or window.theme.ContentColor
             local info={row.rarity~=""and row.rarity or row.category}
             if row.tier then info[#info+1]="T"..tostring(row.tier)end
-            if row.equipped then info[#info+1]="Dipakai"end
+            if row.equipped then info[#info+1]="Equipped"end
             if row.vanity then info[#info+1]="Vanity"end
-            if row.locked then info[#info+1]="Terkunci"end
+            if row.locked then info[#info+1]="Locked"end
             if row.sellable then info[#info+1]=tostring(row.sellPrice).."G"end
             cell.row=row
             local selected=actions and actions.isSelected and actions.isSelected(row.uid)
@@ -426,7 +491,7 @@ return function(window,tab)
             self.pool[i].row=nil;self.pool[i].main.Visible=false;self.pool[i]:SetImage(nil)
         end
         local gridRows=math.ceil(math.min(9,#rows)/3)
-        local height=gridRows>0 and gridRows*164+(gridRows-1)*8 or 64
+        local height=gridRows>0 and gridRows*144+(gridRows-1)*8 or 64
         if height~=self.height then
             self.height=height
             self.main.Size=UDim2.new(1,-20,0,height)
@@ -448,7 +513,7 @@ end)()
 -- Finite user-selected batches. Revalidate each UID and wait for native inventory
 -- confirmation before sending another sale. An uncertain sale is never retried.
 return function(deps)
-    local service={running=false,selected={},message="Centang gear yang ingin dijual. Material belum didukung."}
+    local service={running=false,selected={},message="Select gear to sell. Material selling is not supported."}
     local alive,stop=true,false
     local function emit(message)
         service.message=message
@@ -460,17 +525,17 @@ return function(deps)
     function service:Toggle(row)
         if not alive or self.running or not row.sellable or not row.uid then return false end
         self.selected[row.uid]=not self.selected[row.uid]or nil
-        emit("Pilih gear, lalu tekan Jual pilihan untuk melihat pratinjau.")
+        emit("Select gear, then press Sell selected to preview the sale.")
         return true
     end
     function service:Select(rows)
         if self.running or not alive then return end
         for _,row in ipairs(rows)do if row.sellable and row.uid then self.selected[row.uid]=true end end
-        emit("Gear yang bisa dijual pada filter ini telah dipilih.")
+        emit("Sellable gear in this filter has been selected.")
     end
     function service:Clear()
         if self.running then return end
-        self.selected={};emit("Pilihan dikosongkan.")
+        self.selected={};emit("Selection cleared.")
     end
     function service:Prune(snapshot)
         if self.running then return end
@@ -479,7 +544,7 @@ return function(deps)
         self.selected=keep
     end
     function service:Preview()
-        if not alive or self.running then return nil,"Penjualan masih berjalan."end
+        if not alive or self.running then return nil,"A sale batch is already running."end
         local snapshot=deps.read()
         if not snapshot.ready then return nil,snapshot.message end
         self:Prune(snapshot)
@@ -490,18 +555,18 @@ return function(deps)
                 plan.total=plan.total+row.sellPrice
             end
         end
-        if #plan.rows==0 then return nil,"Belum ada gear yang bisa dijual dipilih."end
+        if #plan.rows==0 then return nil,"No sellable gear is selected."end
         return plan
     end
     function service:Start(plan)
         if not alive or self.running or not plan or plan.used then return false end
         plan.used=true
-        if not deps.host then emit("Jalur jual game belum tersedia.");return false end
+        if not deps.host then emit("The game sale handler is not available.");return false end
         local function waitable(code)return code=="transition"or code=="busy"or code=="pending"end
         local token,reason,code=deps.host.Acquire()
         if not token and not waitable(code)then emit(reason);return false end
         self.running=true;stop=false
-        emit(token and"Memulai penjualan "..#plan.rows.." gear..."or"Antrean jual: "..tostring(reason))
+        emit(token and"Starting sale of "..#plan.rows.." gear..."or"Sale queue: "..tostring(reason))
         deps.spawn(function()
             local confirmed=0
             local outstanding=false
@@ -509,9 +574,9 @@ return function(deps)
                 local queueUntil=deps.clock()+60
                 local lastSecond=-1
                 while not token and alive and not stop do
-                    if deps.clock()>=queueUntil then error("Antrean dihentikan setelah 60 detik. "..tostring(reason).." Selesaikan battle/transaksi lain, lalu coba lagi.",0)end
+                    if deps.clock()>=queueUntil then error("Queue stopped after 60 seconds. "..tostring(reason).." Finish the battle or other transaction, then try again.",0)end
                     local second=math.floor(queueUntil-deps.clock())
-                    if second~=lastSecond then emit("Antrean jual (sisa "..second.." detik): "..tostring(reason));lastSecond=second end
+                    if second~=lastSecond then emit("Sale queue (remaining "..second.." seconds): "..tostring(reason));lastSecond=second end
                     deps.wait(.25)
                     if alive and not stop then
                         token,reason,code=deps.host.Acquire()
@@ -522,25 +587,25 @@ return function(deps)
                     if not alive or stop then break end
                     local delayUntil=deps.clock()+12
                     while alive and not stop and deps.host.Delay()>0 do
-                        if deps.clock()>=delayUntil then error("Timer jeda jual macet. Tekan Cek status jual untuk memeriksa statusnya.",0)end
+                        if deps.clock()>=delayUntil then error("The sale cooldown is stalled. Press Check sale status.",0)end
                         deps.wait(.2)
                     end
                     if not alive or stop then break end
                     local snapshot=deps.read()
                     if not snapshot.ready or snapshot.scope~=plan.scope then
-                        error("Data karakter berubah atau belum tersedia; Refresh lalu pilih ulang.",0)
+                        error("Character data changed or is unavailable. Refresh and select again.",0)
                     end
                     local row
                     for _,candidate in ipairs(snapshot.rows)do if candidate.uid==expected.uid then row=candidate;break end end
                     if not row or not row.sellable or row.id~=expected.id or row.sellPrice~=expected.sellPrice then
-                        error("Gear atau harga berubah; periksa pilihan lalu pratinjau ulang.",0)
+                        error("Gear or price changed. Review the selection and preview again.",0)
                     end
                     local ready,why=deps.host.Ready(token)
                     if not ready then error(why,0)end
                     local sent,message,attempted=deps.host.Send(token,row)
                     outstanding=sent==true or attempted==true
                     if not sent then error(message,0)end
-                    emit("Menunggu konfirmasi: "..row.name)
+                    emit("Waiting for confirmation: "..row.name)
                     local deadline=deps.clock()+8
                     local done=false
                     repeat
@@ -548,32 +613,32 @@ return function(deps)
                         if not alive then break end
                         local after=deps.read()
                         if not after.ready or after.scope~=plan.scope then
-                            error("Data karakter berubah saat transaksi. Periksa bag game.",0)
+                            error("Character data changed during the transaction. Check the game bag.",0)
                         end
                         if deps.host.Confirm(token,row.uid)then done=true;break end
                     until deps.clock()>=deadline
                     if not done then
                         local note=deps.host.ReceiptNote and deps.host.ReceiptNote(deadline-8)or""
-                        error("Belum ada konfirmasi server setelah 8 detik. Proses berhenti tanpa mengirim ulang; periksa bag game dan Cek status jual."..note,0)
+                        error("No server confirmation after 8 seconds. Stopped without retrying; check the game bag and sale status."..note,0)
                     end
                     outstanding=false
                     confirmed=confirmed+1;self.selected[row.uid]=nil
-                    emit(string.format("Terkonfirmasi %d/%d gear.",confirmed,#plan.rows))
+                    emit(string.format("Confirmed %d/%d gear.",confirmed,#plan.rows))
                 end
             end)
             if outstanding then deps.host.Unconfirmed(token)end
             if token then deps.host.Release(token)end
             self.running=false
             if alive then
-                if not ok then emit(string.format("%d gear terkonfirmasi. %s",confirmed,tostring(err)))
-                elseif stop then emit(string.format("Dihentikan. %d gear terkonfirmasi.",confirmed))
-                else emit(string.format("Selesai: %d gear terkonfirmasi dari pembaruan inventory.",confirmed))end
+                if not ok then emit(string.format("%d gear confirmed. %s",confirmed,tostring(err)))
+                elseif stop then emit(string.format("Stopped. %d gear confirmed.",confirmed))
+                else emit(string.format("Done: %d gear confirmed by inventory updates.",confirmed))end
                 if deps.finished then deps.finished()end
             end
         end)
         return true
     end
-    function service:Stop()stop=true;emit("Berhenti setelah hasil transaksi yang sedang dikirim diterima.")end
+    function service:Stop()stop=true;emit("Stopping after the current transaction result is received.")end
     function service:Destroy()alive=false;stop=true;self.selected={}end
     return service
 end
@@ -598,25 +663,25 @@ return function(deps)
         local base,super=deps.class()
         base=base or snapshot.baseClass
         if base==""then base=nil end
-        return {id=base,name=tostring(base or"Belum terbaca"),super=super,
+        return {id=base,name=tostring(base or"Unavailable"),super=super,
             definition=base and findClass(config.Classes,base)or nil}
     end
     local function compatible(row,class)
         if key(row.category)~="weapon"then return true,"Slot "..row.category end
-        if not class.id then return nil,"Class belum terbaca"end
+        if not class.id then return nil,"Class is unavailable"end
         if type(row.class)=="string"and row.class~=""then
-            return key(row.class)==key(class.id),"Syarat class: "..row.class
+            return key(row.class)==key(class.id),"Required class: "..row.class
         end
         local expected=class.definition and class.definition.weaponType
         if type(expected)=="string"and type(row.weaponType)=="string"then
-            return key(expected)==key(row.weaponType),"Senjata class: "..expected.."; gear: "..row.weaponType
+            return key(expected)==key(row.weaponType),"Class weapon: "..expected.."; gear: "..row.weaponType
         end
-        return nil,"Kecocokan senjata belum bisa dipastikan dari katalog"
+        return nil,"Weapon compatibility is not confirmed by the catalog"
     end
     local function priorities(class,focus)
         local keys={}
         local function add(list)for _,name in ipairs(list)do keys[name]=true end end
-        if focus=="Bertahan"then
+        if focus=="Defense"then
             add({"healthFlat","healthPercent","damageReduction","bluntDamageReduction","magicDamageReduction",
                 "dodgeChance","dodgePercent","battleEndHealingPercent","healingPercent"})
         elseif focus=="Loot"then add({"lootRate"})
@@ -645,10 +710,10 @@ return function(deps)
     end
     function compare.Build(snapshot,uid,focus)
         focus=focus or"Damage"
-        if not snapshot.ready then return nil,"Data inventory belum tersedia. Tekan Refresh."end
+        if not snapshot.ready then return nil,"Inventory data is unavailable. Press Refresh."end
         local candidate
         for _,row in ipairs(snapshot.rows)do if row.kind=="gear"and row.uid==uid then candidate=row;break end end
-        if not candidate then return nil,"Gear sudah berubah atau hilang. Tekan Refresh."end
+        if not candidate then return nil,"Gear changed or is no longer present. Press Refresh."end
         local class=compare.Class(snapshot)
         local _,gear=deps.catalogs()
         local baseline,baselines
@@ -662,11 +727,11 @@ return function(deps)
         local canUse,why=compatible(candidate,class)
         result.compatible=canUse
         local lines={"Class: "..class.name..(class.super and class.super~=""and(" / "..tostring(class.super))or""),
-            "Fokus: "..focus,"Kandidat: "..candidate.name,"Slot: "..candidate.category,why}
+            "Focus: "..focus,"Candidate: "..candidate.name,"Slot: "..candidate.category,why}
         if baselines>1 then baseline=nil;result.baseline=nil end
-        if not candidate.effectsReady then lines[#lines+1]="Stat kandidat belum lengkap; angka yang tampil hanya bagian yang terbaca."end
-        if baseline then lines[#lines+1]="Dipakai: "..baseline.name
-        else lines[#lines+1]=baselines>1 and"Ada beberapa gear di slot ini; pembanding perlu dipilih manual di game."or"Belum ada gear dipakai yang terbaca untuk slot ini."end
+        if not candidate.effectsReady then lines[#lines+1]="Candidate stats are incomplete; only available values are shown."end
+        if baseline then lines[#lines+1]="Equipped: "..baseline.name
+        else lines[#lines+1]=baselines>1 and"Several pieces occupy this slot; select the baseline in the game."or"No equipped gear is available for this slot."end
         local selected=priorities(class,focus)
         local union={}
         for stat,value in pairs(candidate.effects or{})do if finite(value)then union[stat]=true end end
@@ -688,23 +753,23 @@ return function(deps)
         end
         local complete=candidate.effectsReady and baseline and baseline.effectsReady
         local verdict
-        if canUse==false then verdict="Tidak cocok untuk class ini"
-        elseif candidate.equipped then verdict="Ini gear yang sedang dipakai"
-        elseif baselines>1 then verdict="Pembanding slot belum pasti"
-        elseif not baseline then verdict="Belum ada pembanding di slot ini"
-        elseif not complete then verdict="Stat belum lengkap; belum bisa menilai"
+        if canUse==false then verdict="Not compatible with this class"
+        elseif candidate.equipped then verdict="This gear is currently equipped"
+        elseif baselines>1 then verdict="The slot baseline is ambiguous"
+        elseif not baseline then verdict="No baseline for this slot"
+        elseif not complete then verdict="Incomplete stats; cannot judge yet"
         else
             local oldCompatible=compatible(baseline,class)
-            if oldCompatible==false and canUse==true then verdict="Kandidat lebih cocok untuk class ini"
-            elseif up>0 and down==0 then verdict="Kandidat lebih bagus untuk fokus "..focus:lower()
-            elseif down>0 and up==0 then verdict="Gear dipakai lebih bagus untuk fokus "..focus:lower()
-            elseif up>0 and down>0 then verdict="Ada pertukaran stat; cek kenaikan dan penurunannya"
-            else verdict="Stat fokus setara atau belum ada stat relevan"end
+            if oldCompatible==false and canUse==true then verdict="The candidate fits this class better"
+            elseif up>0 and down==0 then verdict="Candidate is better for "..focus:lower()
+            elseif down>0 and up==0 then verdict="Equipped gear is better for "..focus:lower()
+            elseif up>0 and down>0 then verdict="Stat trade-offs; review the gains and losses"
+            else verdict="Focus stats are equal or no relevant stats are available"end
         end
         result.verdict=verdict
         table.insert(lines,1,verdict)
-        lines[#lines+1]="\nSTAT: dipakai → kandidat (selisih)\n* = dipakai untuk penilaian fokus"
-        if#result.stats==0 then lines[#lines+1]="Stat rinci belum terbaca dari GearConfig.Describe."end
+        lines[#lines+1]="\nSTATS: equipped → candidate (difference)\n* = used for the selected focus"
+        if#result.stats==0 then lines[#lines+1]="Detailed stats are not available from GearConfig.Describe."end
         for index,stat in ipairs(result.stats)do
             if index<=20 then
                 local values=valueText(gear,stat.key,stat.value)
@@ -714,7 +779,7 @@ return function(deps)
                 lines[#lines+1]=(stat.primary and"* "or"")..stat.name..": "..values
             end
         end
-        if#result.stats>20 then lines[#lines+1]="Stat lain: "..tostring(#result.stats-20).."; lihat detail gear di bag game."end
+        if#result.stats>20 then lines[#lines+1]="Other stats: "..tostring(#result.stats-20).."; see the gear details in the game bag."end
         local powers=gear.BuildStats and gear.BuildStats.PowerById or{}
         local function extras(row,prefix)
             if not row then return end
@@ -726,8 +791,8 @@ return function(deps)
             end
             if#extra>0 then lines[#lines+1]=prefix..": "..table.concat(extra," · ")end
         end
-        extras(baseline,"\nEfek gear dipakai");extras(candidate,"Efek kandidat")
-        lines[#lines+1]="\nSaran memakai arah perubahan stat sesuai fokus. Selisih mengikuti satuan mentah game; bonus set, power, kondisi skill dan efek affix terpisah belum dihitung sebagai DPS. Gear tidak diganti otomatis."
+        extras(baseline,"\nEquipped gear effects");extras(candidate,"Candidate effects")
+        lines[#lines+1]="\nCompares stat changes for your selected focus. Differences use the game's raw units. Set bonuses, powers, skill conditions and separate affix effects are not calculated as DPS. Gear is never equipped automatically."
         result.content=table.concat(lines,"\n")
         return result
     end
@@ -745,10 +810,10 @@ end)()
     local tab=window:CreateTab({name="Inventory"})
     local alive=true
     local snapshot={ready=false,rows={}}
-    local query,category,page="","Semua",1
+    local query,category,page="","All",1
     local pageSize=9
     local artIndex
-    local summary,listing,saleStatus,sales,autoToggle,rarityControl
+    local summary,listing,saleStatus,sales
     local update
     local function saleChanged()if update then update(false)end end
     sales=makeSales({read=reader.Read,host=API.InventoryHost,spawn=task.spawn,wait=task.wait,clock=os.clock,
@@ -756,65 +821,65 @@ end)()
     local actions={isSelected=function(uid)return uid and sales.selected[uid]==true end,
         select=function(row)
             if not sales:Toggle(row)and not row.sellable then
-                window:Popup({title="Tidak bisa dipilih",content=row.sellReason or"Jual material belum didukung.",dismissable=true})
+                window:Popup({title="Cannot select",content=row.sellReason or"Material selling is not supported.",dismissable=true})
             end
         end,
         compare=function(row)
             local result,reason=API.CompareGear(row.uid)
             return result and result.content or reason
         end}
-    tab:CreateInput({name="Cari item",placeholder="Nama, ID, atau rarity",value="",forgetState=true,
+    tab:CreateInput({name="Search items",placeholder="Name, UID, ID or rarity",value="",forgetState=true,
         callback=function(value)query=tostring(value or"");page=1;if update then update(false)end end})
-    tab:CreateDropdown({name="Tampilkan",options={"Semua","Item & material","Gear","Sedang dipakai","Bisa dijual"},value="Semua",forgetState=true,
+    tab:CreateDropdown({name="Show",options={"All","Items & materials","Gear","Equipped","Sellable"},value="All",forgetState=true,
         callback=function(value)category=type(value)=="table"and value[1]or value;page=1;if update then update(false)end end})
-    tab:CreateDropdown({name="Fokus perbandingan gear",options={"Damage","Bertahan","Loot"},value="Damage",forgetState=true,
-        description="Ketuk nama gear untuk membandingkan dengan gear dipakai di slot yang sama. Class dibaca dari karakter aktif.",
+    tab:CreateDropdown({name="Comparison focus",options={"Damage","Defense","Loot"},value="Damage",forgetState=true,
+        description="Tap a gear card to compare it with your equipped gear in the same slot. Uses your active class.",
         callback=function(value)compareFocus=type(value)=="table"and value[1]or value end})
     local toolbar=tab:CreateGroup({direction="Horizontal"})
     toolbar:CreateButton({name="Refresh",callback=function()if update then update(true)end end})
-    toolbar:CreateButton({name="Sebelumnya",callback=function()page=math.max(1,page-1);if update then update(false)end end})
-    toolbar:CreateButton({name="Berikutnya",callback=function()page=page+1;if update then update(false)end end})
-    summary=tab:CreateText({text="Buka bag game sekali, lalu tekan Refresh."})
+    toolbar:CreateButton({name="Previous",callback=function()page=math.max(1,page-1);if update then update(false)end end})
+    toolbar:CreateButton({name="Next",callback=function()page=page+1;if update then update(false)end end})
+    summary=tab:CreateText({text="Open the game bag once, then press Refresh."})
     if summary.body then summary.body.RichText=false end
     saleStatus=tab:CreateText({text=sales.message})
     if saleStatus.body then saleStatus.body.RichText=false end
     local selection=tab:CreateGroup({direction="Horizontal"})
-    selection:CreateButton({name="Pilih sesuai filter",callback=function()
+    selection:CreateButton({name="Select filtered",callback=function()
         sales:Select(reader.Filter(snapshot,query,category))
     end})
-    selection:CreateButton({name="Kosongkan pilihan",callback=function()sales:Clear()end})
+    selection:CreateButton({name="Clear selection",callback=function()sales:Clear()end})
     local transactions=tab:CreateGroup({direction="Horizontal"})
-    transactions:CreateButton({name="Jual pilihan",callback=function()
+    transactions:CreateButton({name="Sell selected",callback=function()
         local plan,reason=sales:Preview()
-        if not plan then window:Popup({title="Jual gear",content=reason,dismissable=true});return end
+        if not plan then window:Popup({title="Sell gear",content=reason,dismissable=true});return end
         local lines={}
         for _,row in ipairs(plan.rows)do
             lines[#lines+1]=row.name.." · "..row.rarity.." · "..tostring(row.sellPrice).."G · UID "..row.uid
         end
-        window:Popup({title="Jual "..#plan.rows.." gear?",subtitle="Perkiraan total "..tostring(plan.total).."G",
-            content=table.concat(lines,"\n").."\n\nPenjualan menghapus gear ini dari bag. Periksa daftar sebelum lanjut.",
-            options={{text="Batal"},{text="Jual gear",style="danger",callback=function()sales:Start(plan)end}},dismissable=true})
+        window:Popup({title="Sell "..#plan.rows.." gear?",subtitle="Estimated total "..tostring(plan.total).."G",
+            content=table.concat(lines,"\n").."\n\nSelling removes this gear from your bag. Check the list before continuing.",
+            options={{text="Cancel"},{text="Sell gear",style="danger",callback=function()sales:Start(plan)end}},dismissable=true})
     end})
-    transactions:CreateButton({name="Hentikan jual",callback=function()if sales.running then sales:Stop()end end})
+    transactions:CreateButton({name="Stop selling",callback=function()if sales.running then sales:Stop()end end})
     local diagnostics=tab:CreateGroup({direction="Horizontal"})
-    diagnostics:CreateButton({name="Cek status jual",callback=function()
+    diagnostics:CreateButton({name="Check sale status",callback=function()
         local host=API.InventoryHost
-        local message=host and host.Status and host.Status()or"Jalur jual belum tersedia."
-        window:Popup({title="Status jual",content=message,dismissable=true})
+        local message=host and host.Status and host.Status()or"The sale handler is not available."
+        window:Popup({title="Sale status",content=message,dismissable=true})
     end})
-    diagnostics:CreateButton({name="Pulihkan status jual",callback=function()
+    diagnostics:CreateButton({name="Recover sale status",callback=function()
         local host=API.InventoryHost
         if sales.running then
-            window:Popup({title="Status jual",content="Tekan Hentikan jual dan tunggu proses selesai dahulu.",dismissable=true});return
+            window:Popup({title="Sale status",content="Press Stop selling and wait for the current process to finish.",dismissable=true});return
         end
         if not host or not host.Status or not host.Recover then return end
         local message,recoverable=host.Status()
         if not recoverable then
-            window:Popup({title="Status jual",content=message.."\n\nBelum ada status macet yang dapat dipulihkan.",dismissable=true});return
+            window:Popup({title="Sale status",content=message.."\n\nThere is no stalled status to recover.",dismissable=true});return
         end
-        window:Popup({title="Pulihkan status jual?",
-            content=message.."\n\nPeriksa bag asli game dahulu. Ini hanya membuka kunci status lokal; permintaan yang sudah terkirim tidak dibatalkan. Tidak ada penjualan ulang otomatis.",
-            options={{text="Batal"},{text="Pulihkan status",callback=function()
+        window:Popup({title="Recover sale status?",
+            content=message.."\n\nCheck the game bag first. This only clears the local lock; it cannot cancel a sent request. Nothing is sold again automatically.",
+            options={{text="Cancel"},{text="Recover status",callback=function()
                 if sales.running or not alive then return end
                 local ok,reason=host.Recover()
                 if ok then sales:Clear()end
@@ -823,16 +888,6 @@ end)()
             end}},dismissable=true})
     end})
     listing=makeList(window,tab)
-    if type(API.Settings)=="function"and type(API.Set)=="function"then
-        local settings=API.Settings()
-        autoToggle=tab:CreateToggle({name="Auto Sell gear saat farming",value=settings.AutoSell==true,forgetState=true,
-            description="Mengikuti loot rules, termasuk saat battle aktif. Jalankan farming agar Auto Sell bekerja; hasil menunggu pembaruan inventory.",
-            callback=function(value)API.Set("AutoSell",value)end})
-        rarityControl=tab:CreateDropdown({name="Batas rarity Auto Sell",value=settings.SellRarity or"Uncommon",forgetState=true,
-            options={"Common","Uncommon","Rare","Epic","Legendary","Secret","Divine","All"},
-            description="Menjual hingga rarity ini saat loot rules mati. Jika loot rules aktif, aturan tersebut berlaku.",
-            callback=function(value)API.Set("SellRarity",type(value)=="table"and value[1]or value)end})
-    end
     local rarityColors={Common=Color3.fromRGB(203,211,224),Uncommon=Color3.fromRGB(118,207,150),
         Rare=Color3.fromRGB(115,177,245),Epic=Color3.fromRGB(188,148,242),Legendary=Color3.fromRGB(255,184,91),
         Secret=Color3.fromRGB(238,141,186),Mythic=Color3.fromRGB(245,135,130),Divine=Color3.fromRGB(244,222,144)}
@@ -841,27 +896,25 @@ end)()
         if read then
             if not sales.running and API.InventoryHost and API.InventoryHost.Reconcile then API.InventoryHost.Reconcile()end
             local ok,result=pcall(reader.Read)
-            snapshot=ok and result or{ready=false,rows={},message="Inventory belum bisa dibaca. Buka bag game, lalu coba Refresh."}
+            snapshot=ok and result or{ready=false,rows={},message="Inventory is unavailable. Open the game bag, then Refresh."}
             sales:Prune(snapshot)
             local playerGui=player:FindFirstChild("PlayerGui")
-            local nativeGui=view and valid(view)and rawget(view,"gui")or playerGui and playerGui:FindFirstChild("PixelGear")
-            local indexed,result=pcall(Art.Index,nativeGui)
+            local nativeGui=view and valid(view)and rawget(view,"gui")or playerGui and(playerGui:FindFirstChild("PixelGear")or playerGui)
+            local indexed,result=pcall(Art.Index,nativeGui,window.screenGui)
             artIndex=indexed and result or nil
-            if autoToggle then autoToggle:Set(API.Settings().AutoSell==true,true)end
-            if rarityControl then rarityControl:Set(API.Settings().SellRarity or"Uncommon",true)end
         end
-        saleStatus:Set(tostring(sales:Count()).." gear dipilih\n"..sales.message)
+        saleStatus:Set(tostring(sales:Count()).." gear selected\n"..sales.message)
         if not snapshot.ready then
-            summary:Set(snapshot.message or"Buka tab Inventory atau tekan Refresh untuk membaca item.")
+            summary:Set(snapshot.message or"Open Inventory or press Refresh to load your items.")
             if summary.body then summary.body.TextColor3=Color3.fromRGB(244,183,110)end
-            listing:SetRows({},rarityColors,snapshot.message or"Tekan Refresh untuk membaca inventory.")
+            listing:SetRows({},rarityColors,snapshot.message or"Press Refresh to load inventory.")
             return
         end
         local rows=reader.Filter(snapshot,query,category)
         local pages=math.max(1,math.ceil(#rows/pageSize))
         page=math.clamp(page,1,pages)
-        local capacity=snapshot.bagLimit and string.format("Bag gear: %d/%d  ·  ",snapshot.bagUsed,snapshot.bagLimit)or""
-        summary:Set(capacity..string.format("%d jenis item (%d total)  ·  %d gear  ·  %d dipakai\n%d hasil  ·  Halaman %d/%d",snapshot.itemKinds,snapshot.itemTotal,snapshot.gearTotal,snapshot.equippedTotal,#rows,page,pages))
+        local capacity=snapshot.bagLimit and string.format("Gear bag: %d/%d  ·  ",snapshot.bagUsed,snapshot.bagLimit)or""
+        summary:Set(capacity..string.format("%d item types (%d total)  ·  %d gear  ·  %d equipped\n%d results  ·  Page %d/%d",snapshot.itemKinds,snapshot.itemTotal,snapshot.gearTotal,snapshot.equippedTotal,#rows,page,pages))
         if summary.body then summary.body.TextColor3=snapshot.bagLimit and snapshot.bagUsed>=snapshot.bagLimit and Color3.fromRGB(245,135,130)or Color3.fromRGB(153,210,177)end
         local visibleRows={}
         for index=(page-1)*pageSize+1,math.min(page*pageSize,#rows)do
@@ -1249,8 +1302,9 @@ function Style.Finalize(window)
     for _,tab in ipairs(window.tabs)do
         for i=#(tab.elements or{}),1,-1 do
             local control=tab.elements[i]
-            local name=tostring(control.name or""):lower()
-            if name=="what's new"or name=="latest update - easier farming"then
+            local name=tostring(control.name or""):lower():gsub("^[%s%+%-]+","")
+            if name=="what's new"or name=="whats new"or name=="release notes"or name=="changelog"
+                or name:find("latest update",1,true)==1 then
                 table.remove(tab.elements,i)
                 window:DisconnectMany(control,control.connections)
                 if control.descriptor and control.descriptor.main then window:DestroySubtree(control.descriptor.main)end
@@ -1261,7 +1315,7 @@ function Style.Finalize(window)
 end
 Style.Theme = {
     WindowColor=ColorSequence.new(rgb(18,21,28),rgb(29,31,39)),
-    ShadowColor=rgb(9,12,18), CornerRoundness=UDim.new(0,16),
+    ShadowColor=rgb(9,12,18), CornerRoundness=UDim.new(0,10),
     ElementGradient=ColorSequence.new(rgb(35,39,49),rgb(30,34,43)),
     ElementStroke=rgb(57,64,79),
     ElementStrokeGradient=ColorSequence.new(rgb(62,69,84),rgb(43,49,62)),
@@ -1271,7 +1325,7 @@ Style.Theme = {
     TabStroke=ColorSequence.new(rgb(224,135,58),rgb(103,68,39)),
     TabColor=rgb(237,231,222), TitlingColor=rgb(248,242,232),
     ContentColor=rgb(226,229,237), ActionColor=rgb(193,202,218),
-    AccentColor=rgb(244,151,58), AccentStroke=rgb(255,188,108), AccentGlow=1,
+    AccentColor=rgb(244,151,58), AccentStroke=rgb(255,188,108), AccentGlow=0,
     SliderBackground=rgb(49,56,69), SliderBackgroundHover=rgb(66,73,89),
     SliderProgress=ColorSequence.new(rgb(204,102,39),rgb(249,168,68)),
     SliderStroke=rgb(164,126,81), SliderHandle=rgb(255,226,181),
@@ -1289,23 +1343,32 @@ Style.Theme = {
 function Style.Install(window)
     if window._AiosCompact then return end
     window._AiosCompact=true
-    local scale=1
+    local scale=.9
     local uiScale=window:Create("UIScale",{Name="AiosCompactScale",Scale=scale,Parent=window.main})
     window.AiosScale=uiScale
     local layout={}
     for key,value in pairs(window.layout)do layout[key]=value end
-    layout.railWidth=260
+    layout.railWidth=180
     layout.railCollapsedWidth=64
     layout.railCollapseBelow=0
-    layout.rowHeight=46
-    layout.rowSpacing=4
+    layout.rowHeight=38
+    layout.rowSpacing=3
     layout.rowCornerRadius=10
     layout.rowInset=9
-    layout.rowPadding=10
+    layout.rowPadding=8
     layout.rowContentSpacing=10
-    layout.rowIconSize=22
+    layout.rowIconSize=18
     layout.railPadding=9
     window.layout=layout
+    -- Replace blurred shadows with disabled, tween-compatible strokes. The
+    -- controls keep their Color/Transparency targets without a blur renderer.
+    window.CreateGlow=function(self,parent,color)
+        if type(color)=="string"then color=self.theme[color]end
+        if typeof(color)=="ColorSequence"then color=color.Keypoints[1].Value end
+        return self:Create("UIStroke",{Enabled=false,Thickness=0,Transparency=1,
+            Color=color or rgb(0,0,0),Parent=parent})
+    end
+    if window.windowShadow then window.windowShadow.Transparency=1 end
     local function reflowTab(tab)
         local title=tab.topbarItemTitle
         if not title or tab.neglectSelector then return end
@@ -1366,12 +1429,12 @@ function Style.Install(window)
     window._applyWindowSize=function(self)
         if self.unloaded then return end
         local view=viewport()
-        local width=math.max(220,math.min(1180,(view.X-24)/scale,view.X*.94/scale))
-        local height=math.max(180,math.min(760,(view.Y-24)/scale,view.Y*.94/scale))
+        local width=math.max(220,math.min(760/scale,(view.X-24)/scale,view.X*.86/scale))
+        local height=math.max(180,math.min(520/scale,(view.Y-24)/scale,view.Y*.84/scale))
         local size=UDim2.fromOffset(math.floor(width),math.floor(height))
         local changed=size~=self.size
         self.size=size
-        layout.railWidth=math.floor(math.clamp(width*.23,150,260))
+        layout.railWidth=math.floor(math.clamp(width*.21,110,180))
         self:_applyRailWidth()
         if self.hidden or self.minimised or self.animating or self._revealing then
             self._pendingResize=self._pendingResize or changed
@@ -1412,6 +1475,7 @@ function Style.Install(window)
         drawLogo(function(class,props)return window:Create(class,props)end,host,30,2)
     end
 
+    local sharedControls={}
     local function styleTab(tab)
         if tab._AiosRow or tab.neglectSelector then return end
         tab._AiosRow=true
@@ -1424,12 +1488,33 @@ function Style.Install(window)
         if title then
             title.AutomaticSize=Enum.AutomaticSize.None
             title.Size=UDim2.new(1,-36,0,24)
-            title.TextSize=17
+            title.TextSize=14
             title.TextWrapped=true
             title.TextTruncate=Enum.TextTruncate.None
             title.TextYAlignment=Enum.TextYAlignment.Center
             window:ConnectFor(tab,title:GetPropertyChangedSignal("TextBounds"),function()reflowTab(tab)end)
             reflowTab(tab)
+        end
+        for _,method in ipairs({"CreateToggle","CreateDropdown","CreateInput","CreateSlider"})do
+            local create=tab[method]
+            if type(create)=="function"then
+                tab[method]=function(self,props,...)
+                    local flag=type(props)=="table"and(props.flag or props.Flag)
+                    local previous=flag and sharedControls[method.."/"..flag]
+                    local same=previous~=nil
+                    if same and method=="CreateDropdown"then
+                        local a,b=props.options or props.Options or{},previous.options
+                        same=#a==#b
+                        for i,v in ipairs(a)do if v~=b[i]then same=false;break end end
+                    end
+                    if same then return previous.control end
+                    local control=create(self,props,...)
+                    if flag and not previous then
+                        sharedControls[method.."/"..flag]={control=control,options=props.options or props.Options or{}}
+                    end
+                    return control
+                end
+            end
         end
         local apply=tab._applyVisual
         if type(apply)=="function"then
@@ -1506,11 +1591,9 @@ local function sidebarLibrary(library)
             options.showIconOnly=true
             options.subtitle="Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
-            local translator=options.translator or options.Translator
-            options.translator=function(text,locale)
-                if type(translator)=="function"then text=translator(text,locale)or text end
-                return AiosPresentation.BrandText(text)
-            end
+            options.locale="en"
+            options.Locale="en"
+            options.translator=function(text)return AiosPresentation.BrandText(text)end
             local window=createWindow(self,options,...)
             AiosPresentation.Install(window)
             return window
@@ -1522,6 +1605,9 @@ end
 local function featureClosure(prototype, upvalues)
     if prototype.id==75 then NativeSaleCells=upvalues end
     local function call(...)
+        -- Leave the UI library's plain section headings intact. The optional
+        -- accordion installer is presentation-only and hides controls by default.
+        if prototype.id==183 then return end
         -- Manual inventory batches share the native pending state. Defer native
         -- Auto Sell dispatch until that finite batch has released its reservation.
         if prototype.id==75 and InventorySaleReservation.token then return false end
@@ -1570,7 +1656,7 @@ if type(previous)=="table" then
     if type(previous.Pause)=="function"then pcall(previous.Pause)end
     if type(previous.Unload)=="function"then pcall(previous.Unload)end
 end
-assert(game.GameId==10767928510,"Aios: buka Pixel Lineage terlebih dahulu.")
+assert(game.GameId==10767928510,"Aios: open Pixel Lineage first.")
 -- Remove only the extra example interface left by version 0.1.
 local function removeExampleUI(root)
     if not root then return end
@@ -1595,8 +1681,8 @@ local context = {
 -- They contain no user key, HWID request, or remote license service.
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
-assert(NativeWindow and NativeControl,"Aios: antarmuka mesin fitur belum tersedia.")
-local API = {Version="0.10.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+assert(NativeWindow and NativeControl,"Aios: the feature interface is not ready.")
+local API = {Version="0.11.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
@@ -1631,22 +1717,22 @@ return function(cells,life,reservation,receipts)
         end
     end
     local function gate()
-        if not life()then return false,"Menu sudah ditutup.","closed"end
-        if not cells or type(value(2))~="table"or not value(13)then return false,"Jalur jual game belum tersedia.","unavailable"end
+        if not life()then return false,"The menu is closed.","closed"end
+        if not cells or type(value(2))~="table"or not value(13)then return false,"The game sale handler is not available.","unavailable"end
         host.Reconcile()
         local craft,sale=value(1),value(2)
-        if sale.blocked then return false,"Hasil jual sebelumnya belum pasti. Tekan Cek status jual, lalu pulihkan status bila diperlukan.","blocked"end
-        if craft and(craft.pending or craft.inFlight)then return false,"Transaksi craft/egg lain masih berjalan.","busy"end
-        if sale.pending then return false,"Hasil jual sebelumnya masih ditunggu.","pending"end
-        if value(9)and value(9).blocked or value(10)then return false,"Proteksi atau batas sesi sedang aktif.","protection"end
+        if sale.blocked then return false,"The previous sale is unconfirmed. Check sale status, then recover it if needed.","blocked"end
+        if craft and(craft.pending or craft.inFlight)then return false,"A crafting or egg transaction is still running.","busy"end
+        if sale.pending then return false,"Waiting for the previous sale result.","pending"end
+        if value(9)and value(9).blocked or value(10)then return false,"A protection rule or session limit is active.","protection"end
         local ready=value(5)
-        if type(ready)~="function"then return false,"Pemeriksa kesiapan jual belum tersedia.","unavailable"end
-        if not ready()then return false,"Data battle/transisi belum mengizinkan pengiriman jual.","transition"end
-        if type(value(3))~="table"then return false,"Data inventory belum tersedia.","profile"end
+        if type(ready)~="function"then return false,"The sale readiness check is unavailable.","unavailable"end
+        if not ready()then return false,"Waiting for the battle transition to finish before selling.","transition"end
+        if type(value(3))~="table"then return false,"Inventory data is not available.","profile"end
         return true
     end
     function host.Acquire()
-        if reservation.token then return nil,"Penjualan masih berjalan."end
+        if reservation.token then return nil,"A sale batch is already running."end
         local ok,reason,code=gate()
         if not ok then return nil,reason,code end
         local token={}
@@ -1654,7 +1740,7 @@ return function(cells,life,reservation,receipts)
         return token
     end
     function host.Ready(token)
-        if reservation.token~=token then return false,"Penjualan sudah dihentikan."end
+        if reservation.token~=token then return false,"Selling has stopped."end
         return gate()
     end
     function host.Delay()
@@ -1666,7 +1752,7 @@ return function(cells,life,reservation,receipts)
     function host.Send(token,row)
         local ok,reason=host.Ready(token)
         if not ok then return false,reason,false end
-        if host.Delay()>0 then return false,"Jeda transaksi belum selesai.",false end
+        if host.Delay()>0 then return false,"The transaction cooldown is still active.",false end
         local sale=value(2)
         local pending={uid=row.uid,name=row.name,price=row.sellPrice,at=os.clock(),aiosScope=scope(host.Profile()),
             aiosProfileRevision=receipts.profileRevision or 0}
@@ -1677,7 +1763,7 @@ return function(cells,life,reservation,receipts)
         if not sent then
             sale.blocked=true
             sale.message="Sale dispatch uncertain; inspect native inventory before retrying"
-            return false,"Pengiriman belum pasti. Proses dihentikan; periksa bag game.",true
+            return false,"Delivery is uncertain. Selling stopped; check the game bag.",true
         end
         return true,nil,true
     end
@@ -1699,40 +1785,40 @@ return function(cells,life,reservation,receipts)
     function host.Release(token)if reservation.token==token then reservation.token=nil end end
     function host.ReceiptNote(since)
         if receipts.toastAt and receipts.toastAt>=since and receipts.toast then
-            return " Pesan game terakhir: "..tostring(receipts.toast):sub(1,350)
+            return " Latest game message: "..tostring(receipts.toast):sub(1,350)
         end
         return ""
     end
     function host.Status()
         host.Reconcile()
         local sale,p=value(2),host.Profile()
-        if type(sale)~="table"then return "Jalur jual belum tersedia.",false end
+        if type(sale)~="table"then return "The sale handler is not available.",false end
         local pending=sale.pending
         if pending then
             local age=finite(pending.at)and math.max(0,os.clock()-pending.at)or nil
             local found=type(p)=="table"and type(p.gearBag)=="table"and p.gearBag[pending.uid]~=nil
-            return "Transaksi: "..tostring(pending.name or pending.uid).."\nUmur: "..(age and math.floor(age).." detik"or"tidak diketahui")
-                .."\nUID pada bag sekarang: "..(found and"masih ada"or"tidak ada/belum terbaca")
+            return "Transaction: "..tostring(pending.name or pending.uid).."\nAge: "..(age and math.floor(age).." seconds"or"unknown")
+                .."\nUID in the current bag: "..(found and"present"or"absent or unavailable")
                 .."\n"..tostring(sale.message or"")..host.ReceiptNote(finite(pending.at)and pending.at or 0),
                 sale.blocked==true and(not age or age>=10)
         end
         local delay=host.Delay()
-        local timerNote=delay>12 and"\nTimer jeda jual tidak wajar: "..math.ceil(delay).." detik atau lebih."or""
-        return tostring(sale.message or"Tidak ada penjualan tertunda.")..timerNote,sale.blocked==true or delay>12
+        local timerNote=delay>12 and"\nUnexpected sale cooldown: "..math.ceil(delay).." seconds or more."or""
+        return tostring(sale.message or"No sale is pending.")..timerNote,sale.blocked==true or delay>12
     end
     function host.Recover()
-        if reservation.token then return false,"Hentikan proses jual sebelum memulihkan status."end
+        if reservation.token then return false,"Stop selling before recovering the status."end
         host.Reconcile()
         local sale,p=value(2),host.Profile()
-        if type(sale)~="table"or type(p)~="table"or type(p.gearBag)~="table"then return false,"Buka bag game dan Refresh dahulu."end
+        if type(sale)~="table"or type(p)~="table"or type(p.gearBag)~="table"then return false,"Open the game bag and Refresh first."end
         local pending=sale.pending
-        if pending and finite(pending.at)and os.clock()-pending.at<10 then return false,"Transaksi masih baru; tunggu hasilnya dahulu."end
+        if pending and finite(pending.at)and os.clock()-pending.at<10 then return false,"The transaction is recent; wait for its result first."end
         -- Explicit local recovery only. Keep the uncertain record and never resend
         -- or credit Gold here. A new sale still needs a fresh preview/confirmation.
         sale.aiosPreviousUnconfirmed=pending or sale.aiosPreviousUnconfirmed
         sale.pending=nil;sale.blocked=false;sale.nextAt=os.clock()+1
         sale.message="Local sale status recovered; check bag and select again"
-        return true,"Status lokal dipulihkan. Tidak ada item yang dikirim ulang dan tidak ada Gold yang ditambahkan. Refresh lalu pilih gear yang masih ada."
+        return true,"Local status recovered. No item was sent again and no Gold was added. Refresh and select gear still in your bag."
     end
     return host
 end
@@ -1814,7 +1900,7 @@ local function showError(message)
         gui.Parent=p:WaitForChild("PlayerGui")
         local box=Instance.new("TextButton");box.AnchorPoint=Vector2.new(0.5,0.5);box.Position=UDim2.fromScale(0.5,0.5)
         box.Size=UDim2.new(0.9,0,0,210);box.BackgroundColor3=Color3.fromRGB(24,31,45);box.TextColor3=Color3.new(1,1,1)
-        box.TextSize=14;box.TextWrapped=true;box.Text="Aios belum bisa dimulai\n\n"..tostring(message):sub(1,650).."\n\nKetuk untuk menutup."
+        box.TextSize=14;box.TextWrapped=true;box.Text="Aios could not start\n\n"..tostring(message):sub(1,650).."\n\nTap to close."
         box.Parent=gui;box.Activated:Connect(function()gui:Destroy()end)
     end)
 end
