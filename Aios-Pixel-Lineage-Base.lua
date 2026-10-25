@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.17 - 3 columns x 9 rows and independent castle-to-room replay
+-- AIOS HUB / Pixel Lineage 0.18 - Return Home confirmation, castle arrival and fresh adventure replay
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -688,7 +688,7 @@ end)()(window)
     function renderer.Report()
         if not alive then return "Image renderer is closed."end
         loadModules()
-        local lines={"AIOS ITEM IMAGE REPORT v0.17","UI metadata only; no server commands, account IDs or script source."}
+        local lines={"AIOS ITEM IMAGE REPORT v0.18","UI metadata only; no server commands, account IDs or script source."}
         for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
             local value=modules[name]
             lines[#lines+1]="\n"..name..": "..tostring(moduleStatus[name]or(value and type(value)or"not found"))
@@ -1565,6 +1565,9 @@ return function(clock)
     local function inRun()
         if ui and type(ui.InRun)=="function"then local ok,v=pcall(ui.InRun);if ok and type(v)=="boolean"then return v end end
     end
+    local function returnStage()
+        if ui and type(ui.ReturnStage)=="function"then local ok,v=pcall(ui.ReturnStage);if ok then return v end end
+    end
     local function castle(run,returning)
         if loop.inBattle or inRun()==true then return false end
         if active(run)and not(returning and inRun()==false)then return false end
@@ -1659,9 +1662,42 @@ return function(clock)
                     loop.pending=nil;loop.blocked=pending.clicked and"Return requested, but castle arrival was not confirmed"or"No native castle return control or retreat choice was found"
                     status(cells,loop.blocked);return true
                 end
-                -- A retreat offered by the current server snapshot is the same
-                -- indexed vote used by the original route controller.
-                if not pending.routeSent and type(run)=="table"and run.phase=="choose"and type(run.choices)=="table"then
+                local stage=returnStage()
+                local returnText
+                if ui and type(ui.ReturnStage)=="function"then
+                    -- Return Home arms the native exit first; its second press
+                    -- completes that confirmation. The result panel then owns
+                    -- the final Return to Castle action.
+                    if clock()>=(pending.nextActionAt or 0)or stage~=pending.lastUIStage then
+                        local action
+                        if stage=="castle"and(pending.castleClicks or 0)<2 then action="ReturnToCastle"
+                        elseif stage=="confirm"and(pending.confirms or 0)<3 then action="ConfirmReturn"
+                        elseif stage=="home"and(pending.homeClicks or 0)<4 then action="ReturnHome"end
+                        if action and type(ui[action])=="function"then
+                            local ok,clicked=pcall(ui[action])
+                            pending.nextActionAt=clock()+.8
+                            if ok and clicked then
+                                pending.clicked=true
+                                pending.lastUIStage=stage
+                                if action=="ReturnHome"then
+                                    pending.homeClicks=(pending.homeClicks or 0)+1
+                                    pending.nextActionAt=clock()+(pending.homeClicks>=2 and 4 or 1)
+                                elseif action=="ReturnToCastle"then
+                                    pending.castleClicks=(pending.castleClicks or 0)+1
+                                    pending.nextActionAt=clock()+4
+                                else pending.confirms=(pending.confirms or 0)+1 end
+                            end
+                        end
+                    end
+                    if(pending.castleClicks or 0)>0 then returnText="Return to Castle pressed; waiting for castle"
+                    elseif stage=="castle"then returnText="Run results ready; returning to castle"
+                    elseif stage=="results"or(pending.homeClicks or 0)>=2 then returnText="Return Home confirmed; waiting for run results"
+                    elseif stage=="confirm"or(pending.homeClicks or 0)==1 then returnText="Confirming Return Home (2/2)"
+                    else returnText="Opening Return Home (1/2)"end
+                end
+                -- Older adapters may expose only the final return control.
+                -- Indexed retreat remains a fallback when no Home/result UI is available.
+                if not stage and not pending.routeSent and type(run)=="table"and run.phase=="choose"and type(run.choices)=="table"then
                     for index,choice in ipairs(run.choices)do
                         if type(choice)=="table"and(choice.type or choice.kind)=="retreat"and choice.enabled~=false then
                             pending.routeSent=send(cells,"RunAction",{action="vote",choice=index,runId=run.id,round=run.round,phase=run.phase})
@@ -1670,18 +1706,18 @@ return function(clock)
                         end
                     end
                 end
-                if clock()>=(pending.nextTry or 0)and(pending.clicks or 0)<3 and(not pending.lastClick or clock()-pending.lastClick>=5)then
+                if not(ui and ui.ReturnStage)and clock()>=(pending.nextTry or 0)and(pending.clicks or 0)<3 and(not pending.lastClick or clock()-pending.lastClick>=5)then
                     pending.nextTry=clock()+1
                     local ok,clicked=pcall(function()return ui and ui.ReturnToCastle and ui.ReturnToCastle()end)
                     if ok and clicked then pending.clicked=true;pending.clicks=(pending.clicks or 0)+1;pending.lastClick=clock()end
                 end
-                if pending.clicked and ui and ui.ConfirmReturn and clock()>=(pending.confirmAt or 0)and(pending.confirms or 0)<3 then
+                if not(ui and ui.ReturnStage)and pending.clicked and ui and ui.ConfirmReturn and clock()>=(pending.confirmAt or 0)and(pending.confirms or 0)<3 then
                     pending.confirmAt=clock()+1
                     local ok,confirmed=pcall(ui.ConfirmReturn)
                     if ok and confirmed then pending.confirms=(pending.confirms or 0)+1 end
                 end
                 if clock()-pending.began>=5 and not pending.queried then pending.queried=true;send(cells,"RunAction",{action="state"})end
-                status(cells,pending.clicked and"Returning to castle after the act boss"or"Waiting for the game's castle return control")
+                status(cells,returnText or(pending.clicked and"Returning to castle after the act boss"or"Waiting for the game's castle return control"))
                 return true
             end
             if pending.stage=="room"then
@@ -1725,6 +1761,13 @@ return function(clock)
             end
         end
         if castle(run,false)then loop.pending=waitRoom(target,difficulty,modifier,settings.ReplayDelay,type(run)=="table"and run.id);status(cells,"Creating a new room for Act "..target);return true end
+        -- Resume from the Returned Home result screen, including a reload or a
+        -- manual first exit. Its result is usually retreat, rather than victory.
+        local exitStage=returnStage()
+        if not loop.inBattle and(exitStage=="castle"or exitStage=="results")and(not active(run)or inRun()==false)then
+            loop.pending={stage="return",runId=type(run)=="table"and run.id,began=clock()}
+            status(cells,"Run results ready; returning to castle before the next room");return true
+        end
         if type(run)~="table"or run.dungeon then return false end
         if matches and current==target then loop.observed={id=run.id,target=target}end
         local observed=loop.observed and loop.observed.id==run.id and loop.observed.target==target
@@ -2646,7 +2689,7 @@ local function sidebarLibrary(library)
             options.name="AIOS HUB"
             options.showName="A"
             options.showIconOnly=true
-            options.subtitle="v0.17 · Made by Ilham Ziqri"
+            options.subtitle="v0.18 · Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
             options.locale="en"
             options.Locale="en"
@@ -2763,13 +2806,19 @@ return function(player,window)
     local function normalize(text)return tostring(text or""):gsub("<[^>]*>",""):upper():gsub("[^%w]+"," "):match("^%s*(.-)%s*$")end
     local exact={
         ["RETURN TO CASTLE"]=true,["BACK TO CASTLE"]=true,["RETURN TO TOWN"]=true,["BACK TO TOWN"]=true,
-        ["RETURN TO LOBBY"]=true,["BACK TO LOBBY"]=true,["LEAVE RUN"]=true,["EXIT RUN"]=true,
+        ["RETURN TO LOBBY"]=true,["BACK TO LOBBY"]=true,["RETURN TO THE CASTLE"]=true,
     }
     local function returnLabel(label)
         local compact=label:gsub(" ","")
         return exact[label]or compact:find("RETURNTOCASTLE",1,true)or compact:find("BACKTOCASTLE",1,true)
             or compact=="RETURNTOTOWN"or compact=="RETURNTOWN"or compact=="RETURNTOLOBBY"
-            or compact=="BACKTOLOBBY"or compact=="LEAVERUN"or compact=="EXITRUN"
+            or compact=="BACKTOLOBBY"or compact:find("RETURNTOTHECASTLE",1,true)
+    end
+    local function homeLabel(label)
+        local compact=label:gsub(" ","")
+        return label=="RETURN HOME"or label=="CONFIRM RETURN HOME"or label=="BACK HOME"
+            or compact=="RETURNHOME"or compact=="CONFIRMRETURNHOME"or compact=="BACKHOME"
+            or compact=="LEAVERUN"or compact=="EXITRUN"
     end
     local function runContext(node)
         for _=1,6 do
@@ -2793,7 +2842,7 @@ return function(player,window)
     local function scan()
         if ui.snapshot and os.clock()-ui.at<.5 then return ui.snapshot end
         ui.at=os.clock()
-        local snapshot={buttons={},castle=false,returnPrompt=false}
+        local snapshot={buttons={},castle=false,returnPrompt=false,returnedHome=false}
         local root=player:FindFirstChild("PlayerGui")
         if root then for _,screen in ipairs(root:GetChildren())do
             if screen:IsA("ScreenGui")and screen~=window.screenGui and screen.Enabled then
@@ -2801,9 +2850,11 @@ return function(player,window)
                     if(node:IsA("TextLabel")or node:IsA("TextButton"))and visible(node)then
                         local text=normalize(node.Text)
                         if text=="YOUR CASTLE"then snapshot.castle=true end
+                        if text=="RETURNED HOME"then snapshot.returnedHome=true end
                         if node:IsA("TextLabel")and(text:find("RETURN TO CASTLE",1,true)or text:find("RETURN TO TOWN",1,true)
                             or text:find("RETURN TO LOBBY",1,true)or text:find("BACK TO CASTLE",1,true)
-                            or text:find("BACK TO TOWN",1,true)or text:find("BACK TO LOBBY",1,true))then snapshot.returnPrompt=true end
+                            or text:find("BACK TO TOWN",1,true)or text:find("BACK TO LOBBY",1,true)
+                            or text:find("RETURN HOME",1,true))then snapshot.returnPrompt=true end
                     end
                     if node:IsA("GuiButton")and visible(node)then
                         local labels={(normalize(node.Name):gsub(" ",""))}
@@ -2869,10 +2920,10 @@ return function(player,window)
     function ui.IsCastle()
         local snapshot=scan()
         local flag=ui.InRun()
-        if flag==true or flag~=false and not snapshot.castle or snapshot.returnPrompt then return false end
+        if flag==true or flag~=false and not snapshot.castle or snapshot.returnPrompt or snapshot.returnedHome then return false end
         for _,entry in ipairs(snapshot.buttons)do
             if visible(entry.node)then for _,label in ipairs(entry.labels)do
-                if returnLabel(label)then return false end
+                if returnLabel(label)or homeLabel(label)then return false end
             end end
         end
         return true
@@ -2885,9 +2936,22 @@ return function(player,window)
         end
         return false
     end
-    function ui.ConfirmReturn()
+    function ui.ReturnHome()
+        local snapshot=scan()
+        -- The result panel leaves Return Home visible behind it. Never press
+        -- that underlying button once Return to Castle is available.
+        if snapshot.returnedHome then return false end
+        for _,entry in ipairs(snapshot.buttons)do
+            for _,label in ipairs(entry.labels)do if returnLabel(label)then return false end end
+        end
+        for _,entry in ipairs(snapshot.buttons)do
+            for _,label in ipairs(entry.labels)do if homeLabel(label)then return click(entry.node)end end
+        end
+        return false
+    end
+    local function confirmation(snapshot)
         local confirm={YES=true,CONFIRM=true,RETURN=true,LEAVE=true}
-        for _,entry in ipairs(scan().buttons)do
+        for _,entry in ipairs(snapshot.buttons)do
             local allowed=false
             for _,label in ipairs(entry.labels)do if confirm[label]then allowed=true end end
             if allowed then
@@ -2904,17 +2968,34 @@ return function(player,window)
                                 if text~=""then hasContext=true end
                                 if text:find("RETURN TO CASTLE",1,true)or text:find("RETURN TO TOWN",1,true)or text:find("LEAVE THIS RUN",1,true)
                                     or text:find("RETURN TO LOBBY",1,true)or text:find("LEAVE RUN",1,true)
-                                    or text:find("LEAVE THE RUN",1,true)or text:find("BACK TO CASTLE",1,true)then returnContext=true end
+                                    or text:find("LEAVE THE RUN",1,true)or text:find("BACK TO CASTLE",1,true)
+                                    or text:find("RETURN HOME",1,true)then returnContext=true end
                             end
                         end
                     end
-                    if returnContext then return click(entry.node)end
+                    if returnContext then return entry.node end
                     if hasContext then break end
                     parent=parent.Parent
                 end
             end
         end
-        return false
+    end
+    function ui.ConfirmReturn()
+        local button=confirmation(scan())
+        return button and click(button)or false
+    end
+    function ui.ReturnStage()
+        local snapshot=scan()
+        -- Destination/result controls take precedence over the still-visible
+        -- run sidebar. A successful click alone is never treated as arrival.
+        if confirmation(snapshot)then return"confirm"end
+        for _,entry in ipairs(snapshot.buttons)do
+            if visible(entry.node)then for _,label in ipairs(entry.labels)do if returnLabel(label)then return"castle"end end end
+        end
+        if snapshot.returnedHome then return"results"end
+        for _,entry in ipairs(snapshot.buttons)do
+            if visible(entry.node)then for _,label in ipairs(entry.labels)do if homeLabel(label)then return"home"end end end
+        end
     end
     return ui
 end
@@ -2928,7 +3009,7 @@ task.spawn(function()
         task.wait(.35)
     end
 end)
-local API = {Version="0.17.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.18.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
