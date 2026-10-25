@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.18 - Return Home confirmation, castle arrival and fresh adventure replay
+-- AIOS HUB / Pixel Lineage 0.19 - pinned Return Home confirmation and readable inventory controls
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -688,7 +688,7 @@ end)()(window)
     function renderer.Report()
         if not alive then return "Image renderer is closed."end
         loadModules()
-        local lines={"AIOS ITEM IMAGE REPORT v0.18","UI metadata only; no server commands, account IDs or script source."}
+        local lines={"AIOS ITEM IMAGE REPORT v0.19","UI metadata only; no server commands, account IDs or script source."}
         for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
             local value=modules[name]
             lines[#lines+1]="\n"..name..": "..tostring(moduleStatus[name]or(value and type(value)or"not found"))
@@ -884,10 +884,10 @@ return function(window,tab)
         cell.pick=window:Create("TextButton",{Name="SelectForSale",Text="",AutoButtonColor=false,
             FontFace=window.theme.Font,TextSize=22,Size=UDim2.fromOffset(34,34),Position=UDim2.fromOffset(0,0),
             BackgroundTransparency=1,BorderSizePixel=0,ZIndex=2,Parent=cell.main})
-        cell.name=window:Create("TextLabel",{Name="ItemName",Text="",FontFace=window.theme.Font,TextSize=14,RichText=false,TextWrapped=true,
+        cell.name=window:Create("TextLabel",{Name="ItemName",Text="",FontFace=window.theme.Font,TextSize=14,RichText=false,TextWrapped=false,
             TextTruncate=Enum.TextTruncate.AtEnd,TextXAlignment=Enum.TextXAlignment.Center,Size=UDim2.new(1,-12,0,56),
             Position=UDim2.new(0,6,1,-126),BackgroundTransparency=1,Parent=cell.main},{TextColor3="ContentColor"})
-        cell.meta=window:Create("TextLabel",{Name="ItemDetails",Text="",FontFace=window.theme.Font,TextSize=10,RichText=false,TextWrapped=true,
+        cell.meta=window:Create("TextLabel",{Name="ItemDetails",Text="",FontFace=window.theme.Font,TextSize=10,RichText=false,TextWrapped=false,
             TextTruncate=Enum.TextTruncate.AtEnd,TextXAlignment=Enum.TextXAlignment.Center,Size=UDim2.new(1,-12,0,32),
             Position=UDim2.new(0,6,1,-61),BackgroundTransparency=1,Parent=cell.main})
         cell.identity=window:Create("TextLabel",{Name="ItemIdentity",Text="",FontFace=window.theme.Font,TextSize=9,RichText=false,
@@ -898,12 +898,12 @@ return function(window,tab)
             Position=UDim2.new(1,-6,0,6),BackgroundTransparency=1,Parent=cell.main},{TextColor3="ContentColor"})
         function cell:LayoutImage()
             local small=(self.height or 128)<100
-            self.iconHeight=small and 26 or 44
+            self.iconHeight=small and 26 or(self.height or 128)<120 and 34 or 44
             local imageShown=self.row~=nil and self.image and self.image.Image~=""and self.image.IsLoaded==true
             local shown=imageShown or self.row~=nil and self.pixelHost~=nil
             if self.image then self.image.Visible=not not imageShown end
-            self.name.Position=UDim2.new(0,6,1,shown and-66 or-96)
-            self.name.Size=UDim2.new(1,-12,0,shown and 28 or 40)
+            self.name.Position=UDim2.new(0,6,1,shown and-64 or-96)
+            self.name.Size=UDim2.new(1,-12,0,shown and 20 or 40)
             self.meta.Position=UDim2.new(0,6,1,shown and-36 or-50)
             self.meta.Size=UDim2.new(1,-12,0,shown and 16 or 28)
             self.identity.Position=UDim2.new(0,6,1,-18);self.identity.Size=UDim2.new(1,-12,0,14)
@@ -1396,7 +1396,7 @@ end)()
     tab:CreateDropdown({name="Comparison focus",options={"Damage","Defense","Loot"},value="Damage",forgetState=true,
         description="Tap a gear card to compare it with your equipped gear in the same slot. Uses your active class.",
         callback=function(value)compareFocus=type(value)=="table"and value[1]or value end})
-    local toolbar=tab:CreateGroup({direction="Horizontal"})
+    local toolbar=tab:CreateGroup({direction="Vertical"})
     toolbar:CreateButton({name="Refresh",callback=function()if update then update(true)end end})
     toolbar:CreateButton({name="Image report",callback=function()
         local report=renderer.Report()
@@ -1404,19 +1404,19 @@ end)()
         local ok=copy and pcall(copy,report)
         window:Popup({title="Item image report",content=ok and"Copied. Paste the report into the chat if item images are still missing."or report,dismissable=true})
     end})
-    local paging=tab:CreateGroup({direction="Horizontal"})
+    local paging=tab:CreateGroup({direction="Vertical"})
     paging:CreateButton({name="Previous",callback=function()page=math.max(1,page-1);if update then update(false)end end})
     paging:CreateButton({name="Next",callback=function()page=page+1;if update then update(false)end end})
     summary=tab:CreateText({text="Open Inventory to load your items."})
     if summary.body then summary.body.RichText=false end
     saleStatus=tab:CreateText({text=sales.message})
     if saleStatus.body then saleStatus.body.RichText=false end
-    local selection=tab:CreateGroup({direction="Horizontal"})
+    local selection=tab:CreateGroup({direction="Vertical"})
     selection:CreateButton({name="Select filtered",callback=function()
         sales:Select(reader.Filter(snapshot,query,category))
     end})
     selection:CreateButton({name="Clear selection",callback=function()sales:Clear()end})
-    local transactions=tab:CreateGroup({direction="Horizontal"})
+    local transactions=tab:CreateGroup({direction="Vertical"})
     transactions:CreateButton({name="Sell selected",callback=function()
         local plan,reason=sales:Preview()
         if not plan then window:Popup({title="Sell gear",content=reason,dismissable=true});return end
@@ -1429,7 +1429,7 @@ end)()
             options={{text="Cancel"},{text="Sell gear",style="danger",callback=function()sales:Start(plan)end}},dismissable=true})
     end})
     transactions:CreateButton({name="Stop selling",callback=function()if sales.running then sales:Stop()end end})
-    local diagnostics=tab:CreateGroup({direction="Horizontal"})
+    local diagnostics=tab:CreateGroup({direction="Vertical"})
     diagnostics:CreateButton({name="Check sale status",callback=function()
         local host=API.InventoryHost
         local message=host and host.Status and host.Status()or"The sale handler is not available."
@@ -1668,17 +1668,18 @@ return function(clock)
                     -- Return Home arms the native exit first; its second press
                     -- completes that confirmation. The result panel then owns
                     -- the final Return to Castle action.
-                    if clock()>=(pending.nextActionAt or 0)or stage~=pending.lastUIStage then
+                    if clock()>=(pending.nextActionAt or 0)or stage~=pending.lastUIStage and clock()-(pending.actionAt or-math.huge)>=.25 then
                         local action
                         if stage=="castle"and(pending.castleClicks or 0)<2 then action="ReturnToCastle"
                         elseif stage=="confirm"and(pending.confirms or 0)<3 then action="ConfirmReturn"
-                        elseif stage=="home"and(pending.homeClicks or 0)<4 then action="ReturnHome"end
+                        elseif(stage=="home"or stage=="home_confirm")and(pending.homeClicks or 0)<4 then action="ReturnHome"end
                         if action and type(ui[action])=="function"then
                             local ok,clicked=pcall(ui[action])
                             pending.nextActionAt=clock()+.8
                             if ok and clicked then
                                 pending.clicked=true
                                 pending.lastUIStage=stage
+                                pending.actionAt=clock()
                                 if action=="ReturnHome"then
                                     pending.homeClicks=(pending.homeClicks or 0)+1
                                     pending.nextActionAt=clock()+(pending.homeClicks>=2 and 4 or 1)
@@ -1691,13 +1692,13 @@ return function(clock)
                     end
                     if(pending.castleClicks or 0)>0 then returnText="Return to Castle pressed; waiting for castle"
                     elseif stage=="castle"then returnText="Run results ready; returning to castle"
-                    elseif stage=="results"or(pending.homeClicks or 0)>=2 then returnText="Return Home confirmed; waiting for run results"
-                    elseif stage=="confirm"or(pending.homeClicks or 0)==1 then returnText="Confirming Return Home (2/2)"
+                    elseif stage=="results"or(pending.homeClicks or 0)>=2 then returnText="Waiting for Return Home results"
+                    elseif stage=="confirm"or stage=="home_confirm"or(pending.homeClicks or 0)==1 then returnText="Confirming Return Home (2/2)"
                     else returnText="Opening Return Home (1/2)"end
                 end
                 -- Older adapters may expose only the final return control.
                 -- Indexed retreat remains a fallback when no Home/result UI is available.
-                if not stage and not pending.routeSent and type(run)=="table"and run.phase=="choose"and type(run.choices)=="table"then
+                if not stage and not pending.clicked and not pending.routeSent and type(run)=="table"and run.phase=="choose"and type(run.choices)=="table"then
                     for index,choice in ipairs(run.choices)do
                         if type(choice)=="table"and(choice.type or choice.kind)=="retreat"and choice.enabled~=false then
                             pending.routeSent=send(cells,"RunAction",{action="vote",choice=index,runId=run.id,round=run.round,phase=run.phase})
@@ -2179,6 +2180,54 @@ return function(window)
             if label then label.TextSize=14 end
         end
     end
+    function density.InventoryControl(control)
+        if type(control)~="table"or not control.main or control._AiosInventorySized then return end
+        control._AiosInventorySized=true
+        local kind=control.__type
+        local size=control.main.Size
+        control.main.Size=UDim2.new(1,kind=="Group"and 0 or-16,size.Y.Scale,size.Y.Offset)
+        if control.title and kind~="Text"then
+            control.title.AutomaticSize=Enum.AutomaticSize.None
+            control.title.TextWrapped=false;control.title.TextTruncate=Enum.TextTruncate.AtEnd
+            control.title.TextSize=13
+            control.title.Size=UDim2.new(1,control.iconLabel and-22 or 0,0,18)
+        end
+        if control.container then
+            control.container.AnchorPoint=Vector2.new(0,0)
+            control.container.Position=UDim2.fromOffset(10,6)
+            control.container.Size=UDim2.new(1,-20,0,18)
+        end
+        if kind=="Input"then
+            height(control,54)
+            control._sizeBox=function(self)
+                self.box.AnchorPoint=Vector2.new(0,0)
+                self.box.Position=UDim2.fromOffset(8,26)
+                self.box.Size=UDim2.new(1,-16,0,22)
+            end
+            control:_sizeBox(false)
+            if control.input then control.input.TextSize=13;control.input.TextWrapped=false end
+        elseif kind=="Dropdown"then
+            -- Both lines stay within the native 41px header, so its existing
+            -- opening, search and closing calculations remain valid.
+            height(control,41)
+            if control.top then control.top.Size=UDim2.new(1,0,0,41)end
+            if control.interact then control.interact.Size=UDim2.new(1,0,0,41)end
+            if control.container then control.container.Position=UDim2.fromOffset(10,3);control.container.Size=UDim2.new(1,-20,0,16)end
+            if control.title then control.title.TextSize=12;control.title.Size=UDim2.new(1,0,0,16)end
+            if control.selectedLabel then
+                control.selectedLabel.AnchorPoint=Vector2.new(0,0)
+                control.selectedLabel.Position=UDim2.fromOffset(10,22)
+                control.selectedLabel.Size=UDim2.new(1,-36,0,16)
+                control.selectedLabel.TextSize=13;control.selectedLabel.TextWrapped=false
+                control.selectedLabel.TextTruncate=Enum.TextTruncate.AtEnd
+                control.selectedLabel.TextXAlignment=Enum.TextXAlignment.Left
+            end
+            if control.chevron then control.chevron.Position=UDim2.new(1,-14,0,29);control.chevron.Size=UDim2.fromOffset(12,12)end
+        elseif kind=="Button"then
+            height(control,36)
+            if control.container then control.container.AnchorPoint=Vector2.new(0,.5);control.container.Position=UDim2.new(0,10,.5,0)end
+        end
+    end
     function density.Tab(tab)
         if tab._AiosDensity or tab.neglectSelector then return end
         tab._AiosDensity=true
@@ -2227,13 +2276,13 @@ return function(window)
             local count=available>=900 and 3 or available>=520 and 2 or 1
             local limit=math.max(120,(window.size and window.size.Y.Offset or 600)-(window.layout.chromeHeight or 64)-60)
             if inventory then
-                local wide=available>=520
+                local wide=available>=560
                 fitScale.Scale=1;root.Size=UDim2.new(1,0,0,0)
                 flow.FillDirection=wide and Enum.FillDirection.Horizontal or Enum.FillDirection.Vertical
                 columns[1].AutomaticSize=Enum.AutomaticSize.None
-                columns[1].Size=UDim2.new(wide and .34 or 1,wide and-4 or 0,0,limit+16)
+                columns[1].Size=wide and UDim2.fromOffset(240,limit+16)or UDim2.new(1,0,0,limit+16)
                 columns[2].AutomaticSize=Enum.AutomaticSize.Y
-                columns[2].Size=UDim2.new(wide and .66 or 1,wide and-4 or 0,0,0)
+                columns[2].Size=UDim2.new(1,wide and-248 or 0,0,0)
                 columns[2].LayoutOrder=wide and 2 or 0
                 columns[1].Visible=true;columns[2].Visible=true;columns[3].Visible=false
                 for _,entry in ipairs(records)do
@@ -2333,6 +2382,7 @@ return function(window)
                         if control and not seen[control]then
                             seen[control]=true
                             density.Control(control)
+                            if inventory then density.InventoryControl(control)end
                             if record then
                                 if method=="CreateSection"then section=section+1;tab._AiosSectionTitle=control.name end
                                 register(control)
@@ -2689,7 +2739,7 @@ local function sidebarLibrary(library)
             options.name="AIOS HUB"
             options.showName="A"
             options.showIconOnly=true
-            options.subtitle="v0.18 · Made by Ilham Ziqri"
+            options.subtitle="v0.19 · Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
             options.locale="en"
             options.Locale="en"
@@ -2872,6 +2922,24 @@ return function(player,window)
         ui.snapshot=snapshot
         return snapshot
     end
+    local function pinnedHome()
+        local flow=ui.homeFlow
+        local pin=flow and flow.pin
+        if not pin or(flow.presses or 0)<1 or flow.castleRequested then return end
+        if visible(pin.node)then return pin.node end
+        -- Some views rebuild the button after arming it. Resolve only its
+        -- original parent/name; never substitute another generic confirmation.
+        if pin.parent and pin.parent.Parent then
+            local found
+            for _,node in ipairs(pin.parent:GetChildren())do
+                if node:IsA("GuiButton")and node.Name==pin.name and visible(node)then
+                    if found then return end
+                    found=node
+                end
+            end
+            if found then pin.node=found;return found end
+        end
+    end
     local function click(button)
         if not visible(button)then return false end
         local supported,interactable=pcall(function()return button.Interactable end)
@@ -2920,18 +2988,24 @@ return function(player,window)
     function ui.IsCastle()
         local snapshot=scan()
         local flag=ui.InRun()
+        if ui.homeFlow and not ui.homeFlow.castleRequested then return false end
         if flag==true or flag~=false and not snapshot.castle or snapshot.returnPrompt or snapshot.returnedHome then return false end
         for _,entry in ipairs(snapshot.buttons)do
             if visible(entry.node)then for _,label in ipairs(entry.labels)do
                 if returnLabel(label)or homeLabel(label)then return false end
             end end
         end
+        ui.homeFlow=nil
         return true
     end
     function ui.ReturnToCastle()
         for _,entry in ipairs(scan().buttons)do
             for _,label in ipairs(entry.labels)do
-                if returnLabel(label)or entry.runContext and(label=="RETREAT"or label=="CASTLE"or label=="TOWN"or label=="LEAVE ADVENTURE")then return click(entry.node)end
+                if returnLabel(label)or entry.runContext and(label=="RETREAT"or label=="CASTLE"or label=="TOWN"or label=="LEAVE ADVENTURE")then
+                    local ok=click(entry.node)
+                    if ok then ui.homeFlow=ui.homeFlow or{};ui.homeFlow.castleRequested=true end
+                    return ok
+                end
             end
         end
         return false
@@ -2944,8 +3018,19 @@ return function(player,window)
         for _,entry in ipairs(snapshot.buttons)do
             for _,label in ipairs(entry.labels)do if returnLabel(label)then return false end end
         end
+        local function press(button)
+            local flow=ui.homeFlow or{presses=0}
+            local pin={node=button,parent=button.Parent,name=button.Name}
+            local ok=click(button)
+            if ok then
+                flow.presses=(flow.presses or 0)+1;flow.pin=pin;ui.homeFlow=flow
+            end
+            return ok
+        end
+        local pinned=pinnedHome()
+        if pinned then return press(pinned)end
         for _,entry in ipairs(snapshot.buttons)do
-            for _,label in ipairs(entry.labels)do if homeLabel(label)then return click(entry.node)end end
+            for _,label in ipairs(entry.labels)do if homeLabel(label)then return press(entry.node)end end
         end
         return false
     end
@@ -2993,6 +3078,8 @@ return function(player,window)
             if visible(entry.node)then for _,label in ipairs(entry.labels)do if returnLabel(label)then return"castle"end end end
         end
         if snapshot.returnedHome then return"results"end
+        if pinnedHome()then return"home_confirm"end
+        if ui.homeFlow and(ui.homeFlow.presses or 0)>=2 and not ui.homeFlow.castleRequested then return"results"end
         for _,entry in ipairs(snapshot.buttons)do
             if visible(entry.node)then for _,label in ipairs(entry.labels)do if homeLabel(label)then return"home"end end end
         end
@@ -3009,7 +3096,7 @@ task.spawn(function()
         task.wait(.35)
     end
 end)
-local API = {Version="0.18.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.19.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
