@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.13 - expanded panel, unchanged controls and item art diagnostics
+-- AIOS HUB / Pixel Lineage 0.14 - mobile side-by-side columns and native palette/frame item art
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -84,6 +84,19 @@ return function(deps)
         return effects,complete
     end
     local rarityRank={Common=1,Uncommon=2,Rare=3,Epic=4,Legendary=5,Secret=6,Mythic=7,Divine=8}
+    local function itemInfo(config,gear,id)
+        local definition=(config.Items or{})[id]or(gear.Items or{})[id]or{}
+        local info
+        if type(config.ItemInfo)=="function"then
+            local ok,value=pcall(config.ItemInfo,id)
+            if ok and type(value)=="table"then info=value end
+        elseif type(config.ItemInfo)=="table"then info=config.ItemInfo[id]end
+        if type(info)~="table"then return definition end
+        local result={}
+        for key,value in pairs(definition)do result[key]=value end
+        for key,value in pairs(info)do result[key]=value end
+        return result
+    end
     function reader.Read()
         local profile,reason=deps.profile()
         if type(profile)~="table"then
@@ -102,11 +115,14 @@ return function(deps)
             if count and count==count and count>0 and count<math.huge then
                 count=math.floor(count)
                 if count>0 then
-                    local definition=(config.Items or{})[id]or(gear.Items or{})[id]or{}
+                    local definition=itemInfo(config,gear,id)
+                    local icon=definition.icon or definition.Icon or definition.art
                     rows[#rows+1]={id=tostring(id),name=tostring(definition.name or id),
                         kind="item",quantity=count,rarity=tostring(definition.rarity or""),
                         category=tostring(definition.type or definition.kind or"Item"),
-                        art=deps.art and deps.art(definition)or nil,iconKey=type(definition.icon)=="string"and definition.icon or nil}
+                        art=deps.art and deps.art(definition)or nil,iconKey=type(icon)=="string"and icon or nil,
+                        iconData=type(icon)=="table"and icon or nil,iconPalette=definition.palette,
+                        iconInfo=definition}
                     itemKinds=itemKinds+1
                     itemTotal=itemTotal+count
                 end
@@ -144,6 +160,7 @@ return function(deps)
                     else sellReason="Cannot sell under the game's rules"end
                 end
                 local effects,effectsReady=effectsOf(described)
+                local icon=described.icon or definition.icon or described.art or definition.art
                 rows[#rows+1]={id=tostring(piece.base),uid=tostring(uid),
                     name=tostring(described.displayName or described.name or definition.name or piece.base),
                     kind="gear",quantity=1,equipped=worn,vanity=displayVanity,locked=locked,
@@ -157,7 +174,8 @@ return function(deps)
                     effects=effects,effectsReady=effectsReady,
                     power=described.power,set=definition.set,affixes=described.affixes,
                     art=deps.art and deps.art(described,piece,definition)or nil,
-                    iconKey=type(described.icon or definition.icon)=="string"and(described.icon or definition.icon)or nil}
+                    iconKey=type(icon)=="string"and icon or nil,iconData=type(icon)=="table"and icon or nil,
+                    iconPalette=described.palette or definition.palette,iconInfo=definition}
                 gearTotal=gearTotal+1
                 if worn then equippedTotal=equippedTotal+1 end
             end
@@ -330,11 +348,10 @@ end)()
 -- No native Gear window, inventory commands, asset guesses, or polling loop.
 return function(window,Art,resolveModules)
     local renderer={}
-    local modules,moduleStatus,root,adapter
+    local modules,moduleStatus,root
     local cache={}
     local observed={}
     local alive=true
-    local white=Color3.fromRGB(255,255,255)
     local function loadModules()
         if modules then return end
         local ok,value,status=pcall(resolveModules)
@@ -347,7 +364,7 @@ return function(window,Art,resolveModules)
             return Art.From({image=node.Image,ImageRectOffset=node.ImageRectOffset,ImageRectSize=node.ImageRectSize})
         end
         local children=node:GetDescendants()
-        if#children==0 or#children>192 then return end
+        if#children==0 or#children>1024 then return end
         local drawn=false
         for _,child in ipairs(children)do
             if child:IsA("LuaSourceContainer")or child:IsA("ViewportFrame")then return end
@@ -362,23 +379,43 @@ return function(window,Art,resolveModules)
     local function clear(stage)
         for _,child in ipairs(stage:GetChildren())do child:Destroy()end
     end
-    local function draw(candidate,stage,key)
-        local fn,m,style=candidate.fn,candidate.module,candidate.style
-        local ok,result
-        if candidate.direct then
-            if style==1 then ok,result=pcall(fn,stage,64,white)
-            else ok,result=pcall(fn,m,stage,64,white)end
-        elseif style==1 then ok,result=pcall(fn,stage,key,64,white)
-        elseif style==2 then ok,result=pcall(fn,key,stage,64,white)
-        elseif style==3 then ok,result=pcall(fn,stage,key,0,0,64,white)
-        else ok,result=pcall(fn,m,stage,key,64,white)end
-        if not ok then clear(stage);return end
-        local art=data(result)
-        if art then
-            if art.node and art.node.Parent==nil then art.node.Parent=stage end
-            return art
+    local function positive(n)return type(n)=="number"and n==n and n>0 and n<math.huge end
+    local function dimensions(value,other)
+        if positive(value)and positive(other)then return value,other end
+        if typeof(value)=="Vector2"or type(value)=="table"then
+            local x,y=value.X or value.width or value.w,value.Y or value.height or value.h
+            if positive(x)and positive(y)then return x,y end
         end
-        return capture(stage)
+    end
+    local function nativeDraw(pixel,stage,icon,palette)
+        if type(pixel)~="table"or type(pixel.Draw)~="function"then return end
+        -- These APIs use a pixel unit, not an output size of 64 pixels.
+        local unit=1
+        if type(pixel.FitUnit)=="function"then
+            local ok,value=pcall(pixel.FitUnit,icon,64,64)
+            if ok and positive(value)then unit=math.clamp(value,1,8)end
+        end
+        local width,height=64,64
+        if type(pixel.Size)=="function"then
+            local ok,a,b=pcall(pixel.Size,icon,unit)
+            if ok then
+                local x,y=dimensions(a,b)
+                if x and x<=512 and y<=512 then width,height=x,y end
+            end
+        end
+        stage.Size=UDim2.fromOffset(width,height)
+        -- Nil preserves the native palette. A real palette uses the options table;
+        -- passing a Color3 here was the old renderer's incorrect API assumption.
+        local options=palette and{palette=palette}or nil
+        for style=1,palette and 2 or 1 do
+            local ok,value=pcall(pixel.Draw,stage,icon,unit,style==1 and options or palette)
+            local art=ok and(data(value)or capture(stage))or nil
+            if art then
+                if art.node and art.node.Parent==nil then art.node.Parent=stage end
+                return art
+            end
+            clear(stage)
+        end
     end
     function renderer.Get(row)
         if not alive then return end
@@ -387,45 +424,59 @@ return function(window,Art,resolveModules)
         if row.art then return row.art end
         if cache[identity]~=nil then return cache[identity]or nil end
         loadModules()
-        local keys={}
-        local function add(key)
+        local keys,specs,drawable,keyPalette={},{},{},{}
+        local pixel,gear=modules.PixelIcons,modules.GearIcons
+        local function addSpec(value,palette)
+            if type(value)=="table"and(value.frames or value.rows or value.pixels or type(value[1])=="string"or type(value[1])=="table")then
+                for _,old in ipairs(specs)do if old.value==value then return end end
+                specs[#specs+1]={value=value,palette=palette or value.palette}
+            end
+        end
+        local function add(key,known,palette)
             if type(key)=="string"and key~=""then
+                if known then drawable[key]=true end
+                if palette then keyPalette[key]=palette end
                 for _,old in ipairs(keys)do if old==key then return end end
                 keys[#keys+1]=key
             end
         end
-        add(row.iconKey)
-        for _,name in ipairs({"PixelIcons","GearIcons"})do
-            local m=modules[name]
-            local helper=type(m)=="table"and m[row.kind=="gear"and"GearIcon"or"ItemIcon"]
-            if type(helper)=="function"then
-                local ok,value=pcall(helper,row.id)
-                if ok then
-                    local art=data(value)
-                    if art then cache[identity]=art;return art end
-                    add(value)
-                end
+        add(row.iconKey,true,row.iconPalette);addSpec(row.iconData,row.iconPalette)
+        if row.iconData then add(row.iconData.icon,true,row.iconData.palette)end
+        if row.kind=="gear"and type(pixel)=="table"and type(pixel.GearIcon)=="function"then
+            local ok,value=pcall(pixel.GearIcon,row.id,row.iconInfo)
+            if ok then
+                local art=data(value)
+                if art then cache[identity]=art;return art end
+                add(value,true);addSpec(value)
+                if type(value)=="table"then add(value.icon,true,value.palette)end
+            end
+        end
+        if row.kind=="gear"and type(gear)=="table"and type(gear.Art)=="function"then
+            local ok,value=pcall(gear.Art,row.id,row.category,row.iconInfo)
+            if ok then
+                local art=data(value)
+                if art then cache[identity]=art;return art end
+                add(value,true);addSpec(value)
+                if type(value)=="table"then add(value.icon,true,value.palette)end
             end
         end
         add(row.id)
         for _,m in pairs(modules)do
             if type(m)=="table"then
                 for _,key in ipairs(keys)do
-                    for _,map in ipairs({m,type(m.ByItem)=="table"and m.ByItem or{},type(m.Icons)=="table"and m.Icons or{}})do
-                        local art=data(map[key])
+                    for _,map in ipairs({type(m.Art)=="table"and m.Art or{},m,type(m.ByItem)=="table"and m.ByItem or{},type(m.Icons)=="table"and m.Icons or{}})do
+                        local value=map[key]
+                        if value~=nil then drawable[key]=true end
+                        local art=data(value)
                         if art then cache[identity]=art;return art end
+                        addSpec(value,keyPalette[key])
                     end
                 end
             end
         end
-        local canDraw=adapter~=nil
-        for _,m in pairs(modules)do
-            if type(m)=="table"then
-                for _,method in ipairs({"Draw","DrawIcon","Render","RenderIcon","Icon","Create","Make"})do
-                    if type(m[method])=="function"then canDraw=true end
-                end
-                for _,key in ipairs(keys)do if type(m[key])=="function"then canDraw=true end end
-            end
+        local canDraw=type(pixel)=="table"and type(pixel.Draw)=="function"
+        for _,m in ipairs({pixel or{},gear or{}})do
+            if type(m)=="table"then for _,key in ipairs(keys)do if type(m[key])=="function"then canDraw=true end end end
         end
         if not canDraw then cache[identity]=false;return end
         if not root then
@@ -434,43 +485,36 @@ return function(window,Art,resolveModules)
         end
         local stage=Instance.new("Frame")
         stage.Name="ItemArt";stage.Size=UDim2.fromOffset(64,64);stage.BackgroundTransparency=1;stage.Parent=root
-        if adapter then
-            for _,key in ipairs(keys)do
-                local art=draw(adapter,stage,key)
-                if art then cache[identity]=art;return art end
-                clear(stage)
-            end
-        end
-        local candidates={}
-        for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
-            local m=modules[name]
-            if type(m)=="table"then
-                for _,method in ipairs({"Draw","DrawIcon","Render","RenderIcon","Icon","Create","Make"})do
-                    if type(m[method])=="function"then
-                        for style=1,4 do candidates[#candidates+1]={module=m,fn=m[method],style=style}end
-                    end
-                end
-                for _,key in ipairs(keys)do
-                    if type(m[key])=="function"then candidates[#candidates+1]={module=m,fn=m[key],style=1,direct=true}end
-                end
-            end
-        end
-        -- Cold-path discovery is bounded and the successful adapter is reused.
+        -- Prefer catalog pixel data; fall back to exact named art only. Never
+        -- call PixelUI.Make or draw a generic badge and report it as item art.
         local attempts=0
-        for _,candidate in ipairs(candidates)do
-            for _,key in ipairs(keys)do
-                attempts=attempts+1
-                local art=draw(candidate,stage,key)
-                if art then if not candidate.direct then adapter=candidate end;cache[identity]=art;return art end
-                clear(stage)
-                if attempts>=32 then break end
-            end
-            if attempts>=32 then break end
+        for _,spec in ipairs(specs)do
+            attempts=attempts+1
+            local art=nativeDraw(pixel,stage,spec.value,spec.palette or row.iconPalette)
+            if art then cache[identity]=art;return art end
+            clear(stage)
+            if attempts>=16 then break end
         end
+        for _,key in ipairs(keys)do
+            if attempts>=24 then break end
+            attempts=attempts+1
+            local art=drawable[key]and nativeDraw(pixel,stage,key,keyPalette[key]or row.iconPalette)or nil
+            if art then cache[identity]=art;return art end
+            clear(stage)
+            for _,m in ipairs({pixel or{},gear or{}})do
+                if type(m)=="table"and type(m[key])=="function"then
+                    local ok,value=pcall(m[key],stage,1,nil)
+                    art=ok and(data(value)or capture(stage))or nil
+                    if art then cache[identity]=art;return art end
+                    clear(stage)
+                end
+            end
+        end
+        observed[identity]="icon="..tostring(row.iconKey or(row.iconData and"pixel data")or"missing metadata").."; pixel definitions="..#specs.."; no supported drawing"
         stage:Destroy();cache[identity]=false
     end
     function renderer.Destroy()
-        alive=false;cache={};observed={};modules=nil;adapter=nil
+        alive=false;cache={};observed={};modules=nil
         if root then window:DestroySubtree(root);root=nil end
     end
     function renderer.Refresh()
@@ -482,7 +526,7 @@ return function(window,Art,resolveModules)
     function renderer.Report()
         if not alive then return "Image renderer is closed."end
         loadModules()
-        local lines={"AIOS ITEM IMAGE REPORT v0.13","UI metadata only; no server commands, account IDs or script source."}
+        local lines={"AIOS ITEM IMAGE REPORT v0.14","UI metadata only; no server commands, account IDs or script source."}
         for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
             local value=modules[name]
             lines[#lines+1]="\n"..name..": "..tostring(moduleStatus[name]or(value and type(value)or"not found"))
@@ -524,6 +568,12 @@ return function(window,Art,resolveModules)
                     end
                 end
                 lines[#lines+1]="  "..info
+                if key=="Art"and type(field)=="table"then
+                    local names={};for artKey in pairs(field)do if type(artKey)=="string"then names[#names+1]=artKey end end
+                    table.sort(names)
+                    local preview={};for j=1,math.min(24,#names)do preview[#preview+1]=names[j]end
+                    lines[#lines+1]="    Art keys ("..#names.."): "..table.concat(preview,",")
+                end
             end
         end
         local identities={};for identity in pairs(observed)do identities[#identities+1]=identity end;table.sort(identities)
@@ -556,7 +606,7 @@ return function(window,tab)
         local card=popup and popup.card
         local content=card and card:FindFirstChild("Content")
         if not camera or not card or not content then return end
-        local viewport=camera.ViewportSize
+        local viewport=window._AiosViewport and window._AiosViewport()or camera.ViewportSize
         local scale=math.min(1,math.max(.5,(viewport.X-24)/math.max(1,card.Size.X.Offset)))
         if scale<1 then window:Create("UIScale",{Scale=scale,Parent=card})end
         local excess=math.max(0,card.Size.Y.Offset-(viewport.Y-24)/scale)
@@ -721,6 +771,7 @@ return function(window,tab)
         self.pool={};self.rows={}
     end
     tab:_register(list)
+    if tab._AiosRegisterCustom then tab._AiosRegisterCustom(list)end
     return list
 end
 
@@ -1551,6 +1602,9 @@ return function(window)
                 control.box.Size=UDim2.new(control.box.Size.X.Scale,control.box.Size.X.Offset,0,26)
             end
         elseif kind=="Section"then height(control,30)
+        elseif kind=="Text"then
+            if control.body then control.body.TextSize=12 end
+            if control.title then control.title.TextSize=14 end
         elseif kind=="Statistic"and not control.compact then
             height(control,66)
             if control.titleContainer then control.titleContainer.Position=UDim2.fromOffset(12,8);control.titleContainer.Size=UDim2.new(1,-24,0,24)end
@@ -1579,10 +1633,12 @@ return function(window)
         tab._AiosDensity=true
         local originalPage=tab.tabPage
         local records,section={},0
-        local columns
-        if tab.name~="Inventory"then
-            local root=window:Create("Frame",{Name="AiosColumns",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+        local columns,root,fitScale
+        local queued,busy=false,false
+        do
+            root=window:Create("Frame",{Name="AiosColumns",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
                 BackgroundTransparency=1,LayoutOrder=0,Parent=originalPage})
+            fitScale=window:Create("UIScale",{Name="ContentFit",Scale=1,Parent=root})
             window:Create("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,VerticalAlignment=Enum.VerticalAlignment.Top,
                 SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,8),Parent=root})
             columns={}
@@ -1594,24 +1650,90 @@ return function(window)
                 columns[i]=col
             end
         end
+        local function extent(node,fallback)
+            if not node then return 0 end
+            local size=node.Size
+            if size.Y.Scale==0 and size.Y.Offset>0 then return size.Y.Offset end
+            local absolute=node.AbsoluteSize
+            return absolute and absolute.Y>0 and absolute.Y/((window._AiosContentScale or 1)*fitScale.Scale)or fallback
+        end
+        local function schedule()
+            if queued or not window._AiosReady or window.unloaded then return end
+            queued=true
+            local function run()queued=false;if not window.unloaded then tab._AiosReflow()end end
+            if task and task.defer then task.defer(run)else run()end
+        end
         tab._AiosReflow=function()
-            if not window._AiosReady or not columns then return end
+            if not window._AiosReady or not columns or busy then return end
+            busy=true
             local width=window.size and window.size.X.Offset or 0
-            local available=width-(window.layout.railWidth or 0)
+            local available=width-(window.layout.railWidth or 0)-32
             local count=available>=1250 and 3 or available>=700 and 2 or 1
+            local limit=math.max(120,(window.size and window.size.Y.Offset or 600)-(window.layout.chromeHeight or 64)-60)
+            local entries,total={},0
+            for _,entry in ipairs(records)do
+                if entry.control.main and entry.control.main.Parent then
+                    entry.height=entry.control.main.Visible==false and 0 or extent(entry.control.main,38)+extent(entry.control.descriptor and entry.control.descriptor.main,0)+4
+                    entries[#entries+1]=entry;total=total+entry.height
+                end
+            end
+            -- Split the same ordered controls into adjacent columns. Prefer cuts
+            -- before headings; keep every control on screen, with no page arrows.
+            local assignments,column,used,remaining={},1,0,total
+            local target=total/count
+            for i,entry in ipairs(entries)do
+                local left=#entries-i+1
+                local slots=count-column
+                local heading=i>1 and entry.section~=entries[i-1].section
+                local groupHeight=entry.height
+                if heading then
+                    for j=i+1,#entries do
+                        if entries[j].section~=entry.section then break end
+                        groupHeight=groupHeight+entries[j].height
+                    end
+                end
+                local followsHeading=i>1 and entries[i-1].control.__type=="Section"
+                if column<count and used>0 and not followsHeading and(left<=slots or used>=target or heading and(used>=target*.7 or used>=target*.5 and used+groupHeight>target*1.15)
+                    or used+entry.height>target*1.18 and used>=target*.65)then
+                    remaining=remaining-used;column=column+1;used=0;target=remaining/(count-column+1)
+                end
+                assignments[#assignments+1]={control=entry.control,column=column}
+                used=used+entry.height
+            end
+            local heights={0,0,0}
+            for i,entry in ipairs(assignments)do heights[entry.column]=heights[entry.column]+entries[i].height end
+            local tallest=math.max(1,heights[1],heights[2],heights[3])
+            local fit=math.min(1,limit/tallest)
+            local sizeKey=width.."/"..limit
+            if tab._AiosFitSize==sizeKey then fit=math.min(fit,tab._AiosFitScale or 1)end
+            tab._AiosFitSize=sizeKey
+            fitScale.Scale=fit
+            root.Size=UDim2.new(1/fit,0,0,0)
             for i,col in ipairs(columns)do
                 col.Size=UDim2.new(1/count,-8*(count-1)/count,0,0);col.Visible=i<=count
             end
-            for _,entry in ipairs(records)do
-                local control=entry.control
-                if control.main and control.main.Parent then
-                    local parent=columns[entry.section%count+1]
+            for _,entry in ipairs(assignments)do
+                    local control=entry.control
+                    local parent=columns[entry.column]
                     control.main.Parent=parent
                     if control.descriptor and control.descriptor.main then control.descriptor.main.Parent=parent end
-                end
             end
+            originalPage.ScrollingEnabled=false
+            originalPage.ScrollBarThickness=0
+            originalPage.CanvasPosition=Vector2.new(0,0)
             tab._AiosColumnCount=count
+            tab._AiosFitScale=fit
+            tab._AiosContentHeight=tallest*fit
+            busy=false
         end
+        local function register(control)
+            records[#records+1]={control=control,section=math.max(0,section-1),title=tab._AiosSectionTitle or tab.name}
+            if control.main then
+                window:ConnectFor(control,control.main:GetPropertyChangedSignal("AbsoluteSize"),schedule)
+                window:ConnectFor(control,control.main:GetPropertyChangedSignal("Visible"),schedule)
+            end
+        end
+        tab._AiosRegisterCustom=function(control)register(control);schedule()end
         density.tabs[#density.tabs+1]=tab
         local function wrap(owner,record)
             for _,method in ipairs({"CreateToggle","CreateButton","CreateDropdown","CreateInput","CreateSlider","CreateKeybind","CreateSection","CreateText","CreateStat","CreateGroup"})do
@@ -1623,8 +1745,8 @@ return function(window)
                             seen[control]=true
                             density.Control(control)
                             if record then
-                                if method=="CreateSection"then section=section+1 end
-                                records[#records+1]={control=control,section=math.max(0,section-1)}
+                                if method=="CreateSection"then section=section+1;tab._AiosSectionTitle=control.name end
+                                register(control)
                             end
                             if method=="CreateGroup"then wrap(control,false)end
                             if window._AiosReady then tab._AiosReflow()end
@@ -1669,6 +1791,7 @@ function Style.Finalize(window)
         end
     end
     window._AiosReady=true
+    window:_applyWindowSize()
     for _,tab in ipairs(window.tabs)do if tab._AiosReflow then tab._AiosReflow()end end
 end
 Style.Theme = {
@@ -1701,7 +1824,7 @@ Style.Theme = {
 function Style.Install(window)
     if window._AiosCompact then return end
     window._AiosCompact=true
-    local scale=.85
+    local scale=.72
     local uiScale=window:Create("UIScale",{Name="AiosCompactScale",Scale=scale,Parent=window.main})
     window.AiosScale=uiScale
     local layout={}
@@ -1774,9 +1897,13 @@ function Style.Install(window)
     window.tabList.ScrollBarImageTransparency=0.5
 
     local function viewport()
+        local gui=window.screenGui
+        local size=gui and gui.AbsoluteSize
+        if size and size.X>0 and size.Y>0 then return size end
         local camera=workspace.CurrentCamera
         return camera and camera.ViewportSize or Vector2.new(1024,640)
     end
+    window._AiosViewport=viewport
     window._clampedPosition=function(self,position)
         if not self.settings.keepOnScreen or position.X.Scale~=0 or position.Y.Scale~=0 then return position end
         local view=viewport()
@@ -1788,6 +1915,18 @@ function Style.Install(window)
     window._applyWindowSize=function(self)
         if self.unloaded then return end
         local view=viewport()
+        local nav=20
+        for _,tab in ipairs(self.tabs)do
+            if not tab.neglectSelector then
+                local size=tab.topbarItem and tab.topbarItem.Size
+                nav=nav+math.max(layout.rowHeight,size and size.Y.Offset or 0)+layout.rowSpacing
+            end
+        end
+        nav=nav+#(self.tabSections or{})*26
+        scale=math.clamp((view.Y*.94-16)/(nav+(layout.chromeHeight or 64)),.38,.72)
+        uiScale.Scale=scale
+        self._AiosContentScale=scale
+        self.tabList.ScrollingEnabled=false
         local width=math.max(220,math.min((view.X-24)/scale,view.X*.96/scale))
         local height=math.max(180,math.min((view.Y-24)/scale,view.Y*.94/scale))
         local size=UDim2.fromOffset(math.floor(width),math.floor(height))
@@ -1811,6 +1950,9 @@ function Style.Install(window)
         end
     end
     window:_applyWindowSize()
+    if window.screenGui and window.screenGui.GetPropertyChangedSignal then
+        window:Connect(window.screenGui:GetPropertyChangedSignal("AbsoluteSize"),function()window:_applyWindowSize()end)
+    end
 
     -- The native restore interaction retains its tap/drag logic, with one A glyph.
     window.showIconOnly=true
@@ -1949,7 +2091,7 @@ local function sidebarLibrary(library)
             options.name="AIOS HUB"
             options.showName="A"
             options.showIconOnly=true
-            options.subtitle="v0.13 · Made by Ilham Ziqri"
+            options.subtitle="v0.14 · Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
             options.locale="en"
             options.Locale="en"
@@ -1968,6 +2110,9 @@ local function featureClosure(prototype, upvalues)
         -- Leave the UI library's plain section headings intact. The optional
         -- accordion installer is presentation-only and hides controls by default.
         if prototype.id==183 then return end
+        -- The old touch fitter otherwise overwrites the presentation sizer
+        -- after CreateWindow, restoring its 520x380 mobile cap.
+        if prototype.id==158 then return end
         -- Manual inventory batches share the native pending state. Defer native
         -- Auto Sell dispatch until that finite batch has released its reservation.
         if prototype.id==75 and InventorySaleReservation.token then return false end
@@ -2042,7 +2187,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: the feature interface is not ready.")
-local API = {Version="0.13.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.14.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
