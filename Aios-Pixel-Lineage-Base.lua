@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.12 - dense responsive controls and direct item icon rendering
+-- AIOS HUB / Pixel Lineage 0.13 - expanded panel, unchanged controls and item art diagnostics
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -330,10 +330,17 @@ end)()
 -- No native Gear window, inventory commands, asset guesses, or polling loop.
 return function(window,Art,resolveModules)
     local renderer={}
-    local modules,root,adapter
+    local modules,moduleStatus,root,adapter
     local cache={}
+    local observed={}
     local alive=true
     local white=Color3.fromRGB(255,255,255)
+    local function loadModules()
+        if modules then return end
+        local ok,value,status=pcall(resolveModules)
+        modules=ok and type(value)=="table"and value or{}
+        moduleStatus=ok and type(status)=="table"and status or{}
+    end
     local function capture(node)
         if typeof(node)~="Instance"or not node:IsA("GuiObject")then return end
         if node:IsA("ImageLabel")or node:IsA("ImageButton")then
@@ -375,13 +382,11 @@ return function(window,Art,resolveModules)
     end
     function renderer.Get(row)
         if not alive then return end
-        if row.art then return row.art end
         local identity=row.kind.."/"..row.id
+        observed[identity]=row.art and"catalog image"or"no supported image"
+        if row.art then return row.art end
         if cache[identity]~=nil then return cache[identity]or nil end
-        if not modules then
-            local ok,value=pcall(resolveModules)
-            modules=ok and type(value)=="table"and value or{}
-        end
+        loadModules()
         local keys={}
         local function add(key)
             if type(key)=="string"and key~=""then
@@ -465,7 +470,7 @@ return function(window,Art,resolveModules)
         stage:Destroy();cache[identity]=false
     end
     function renderer.Destroy()
-        alive=false;cache={};modules=nil;adapter=nil
+        alive=false;cache={};observed={};modules=nil;adapter=nil
         if root then window:DestroySubtree(root);root=nil end
     end
     function renderer.Refresh()
@@ -473,6 +478,62 @@ return function(window,Art,resolveModules)
         -- Successful cached drawings stay intact; failures never cause a loop.
         modules=nil
         for key,value in pairs(cache)do if value==false then cache[key]=nil end end
+    end
+    function renderer.Report()
+        if not alive then return "Image renderer is closed."end
+        loadModules()
+        local lines={"AIOS ITEM IMAGE REPORT v0.13","UI metadata only; no server commands, account IDs or script source."}
+        for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
+            local value=modules[name]
+            lines[#lines+1]="\n"..name..": "..tostring(moduleStatus[name]or(value and type(value)or"not found"))
+            local fields=type(value)=="function"and{"<module>"}or{}
+            if type(value)=="table"then for key in pairs(value)do if type(key)=="string"then fields[#fields+1]=key end end end
+            table.sort(fields,function(a,b)
+                local function priority(key)
+                    key=key:lower()
+                    return(key:find("icon",1,true)or key:find("draw",1,true)or key:find("render",1,true)
+                        or key:find("create",1,true)or key:find("make",1,true))and 0 or 1
+                end
+                local ap,bp=priority(a),priority(b)
+                return ap~=bp and ap<bp or ap==bp and a<b
+            end)
+            for i,key in ipairs(fields)do
+                if i>100 then lines[#lines+1]="  (remaining fields omitted)";break end
+                local field=type(value)=="function"and value or value[key]
+                local info=key..": "..type(field)
+                if type(field)=="function"then
+                    if debug and type(debug.info)=="function"then
+                        local ok,n,va=pcall(debug.info,field,"a")
+                        if ok then info=info.."; params="..tostring(n).."; vararg="..tostring(va)end
+                    end
+                    if type(getconstants)=="function"then
+                        local ok,constants=pcall(getconstants,field)
+                        local hints={}
+                        if ok and type(constants)=="table"then
+                            for _,constant in pairs(constants)do
+                                if type(constant)=="string"and#constant<=48 then
+                                    local text=constant:lower()
+                                    if text:find("icon",1,true)or text:find("draw",1,true)or text:find("frame",1,true)
+                                        or text:find("palette",1,true)or text=="parent"or text=="size"or text=="position"then
+                                        hints[#hints+1]=constant;if#hints>=10 then break end
+                                    end
+                                end
+                            end
+                        end
+                        if#hints>0 then info=info.."; UI hints="..table.concat(hints,",")end
+                    end
+                end
+                lines[#lines+1]="  "..info
+            end
+        end
+        local identities={};for identity in pairs(observed)do identities[#identities+1]=identity end;table.sort(identities)
+        lines[#lines+1]="\nVisible item bases (UIDs omitted):"
+        for i,identity in ipairs(identities)do
+            if i>12 then break end
+            local value=cache[identity]
+            lines[#lines+1]=identity..": "..(value and(value.kind or"image")or observed[identity])
+        end
+        return table.concat(lines,"\n")
     end
     return renderer
 end
@@ -972,13 +1033,18 @@ end)()
         local shared=root and root:FindFirstChild("Shared")
         local scripts=player:FindFirstChild("PlayerScripts")
         local client=scripts and scripts:FindFirstChild("PlatformBattlesClient")
-        local result={}
+        local result,status={},{}
         for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
-            local module=client and client:FindFirstChild(name)or shared and shared:FindFirstChild(name)
-            if module then local ok,value=pcall(require,module);if ok and type(value)=="table"then result[name]=value end end
+            local module=client and client:FindFirstChild(name,true)or shared and shared:FindFirstChild(name,true)
+            if module then
+                local ok,value=pcall(require,module)
+                status[name]=ok and("loaded: "..type(value))or"load failed"
+                if ok then result[name]=value end
+            else status[name]="not found"end
         end
-        return result
+        return result,status
     end)
+    API.InventoryArtReport=renderer.Report
     local summary,listing,saleStatus,sales
     local update
     local function saleChanged()if update then update(false)end end
@@ -1005,6 +1071,12 @@ end)()
     toolbar:CreateButton({name="Refresh",callback=function()if update then update(true)end end})
     toolbar:CreateButton({name="Previous",callback=function()page=math.max(1,page-1);if update then update(false)end end})
     toolbar:CreateButton({name="Next",callback=function()page=page+1;if update then update(false)end end})
+    toolbar:CreateButton({name="Copy image report",callback=function()
+        local report=renderer.Report()
+        local copy=type(setclipboard)=="function"and setclipboard or type(toclipboard)=="function"and toclipboard
+        local ok=copy and pcall(copy,report)
+        window:Popup({title="Item image report",content=ok and"Copied. Paste the report into the chat if item images are still missing."or report,dismissable=true})
+    end})
     summary=tab:CreateText({text="Open Inventory to load your items."})
     if summary.body then summary.body.RichText=false end
     saleStatus=tab:CreateText({text=sales.message})
@@ -1090,7 +1162,7 @@ end)()
         window:Connect(tab.topbarItemInteract.MouseButton1Click,function()task.defer(function()update(true)end)end)
     end
     update(false)
-    return {Destroy=function()alive=false;sales:Destroy();listing:Clear();renderer.Destroy();API.Inventory=nil;API.RefreshInventory=nil;API.CompareGear=nil end}
+    return {Destroy=function()alive=false;sales:Destroy();listing:Clear();renderer.Destroy();API.Inventory=nil;API.RefreshInventory=nil;API.CompareGear=nil;API.InventoryArtReport=nil end}
 end
 ]=]
 -- EDITABLE UI END
@@ -1514,7 +1586,7 @@ return function(window)
             window:Create("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,VerticalAlignment=Enum.VerticalAlignment.Top,
                 SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,8),Parent=root})
             columns={}
-            for i=1,2 do
+            for i=1,3 do
                 local col=window:Create("Frame",{Name="Column"..i,Size=UDim2.new(.5,-4,0,0),AutomaticSize=Enum.AutomaticSize.Y,
                     BackgroundTransparency=1,LayoutOrder=i,Parent=root})
                 window:Create("UIListLayout",{FillDirection=Enum.FillDirection.Vertical,SortOrder=Enum.SortOrder.LayoutOrder,
@@ -1525,17 +1597,20 @@ return function(window)
         tab._AiosReflow=function()
             if not window._AiosReady or not columns then return end
             local width=window.size and window.size.X.Offset or 0
-            local wide=width-(window.layout.railWidth or 0)>=700
-            for i,col in ipairs(columns)do col.Size=UDim2.new(wide and .5 or 1,wide and-4 or 0,0,0);col.Visible=wide or i==1 end
+            local available=width-(window.layout.railWidth or 0)
+            local count=available>=1250 and 3 or available>=700 and 2 or 1
+            for i,col in ipairs(columns)do
+                col.Size=UDim2.new(1/count,-8*(count-1)/count,0,0);col.Visible=i<=count
+            end
             for _,entry in ipairs(records)do
                 local control=entry.control
                 if control.main and control.main.Parent then
-                    local parent=columns[wide and(entry.section%2+1)or 1]
+                    local parent=columns[entry.section%count+1]
                     control.main.Parent=parent
                     if control.descriptor and control.descriptor.main then control.descriptor.main.Parent=parent end
                 end
             end
-            tab._AiosColumnCount=wide and 2 or 1
+            tab._AiosColumnCount=count
         end
         density.tabs[#density.tabs+1]=tab
         local function wrap(owner,record)
@@ -1713,8 +1788,8 @@ function Style.Install(window)
     window._applyWindowSize=function(self)
         if self.unloaded then return end
         local view=viewport()
-        local width=math.max(220,math.min(860/scale,(view.X-24)/scale,view.X*.94/scale))
-        local height=math.max(180,math.min(540/scale,(view.Y-24)/scale,view.Y*.86/scale))
+        local width=math.max(220,math.min((view.X-24)/scale,view.X*.96/scale))
+        local height=math.max(180,math.min((view.Y-24)/scale,view.Y*.94/scale))
         local size=UDim2.fromOffset(math.floor(width),math.floor(height))
         local changed=size~=self.size
         self.size=size
@@ -1874,7 +1949,7 @@ local function sidebarLibrary(library)
             options.name="AIOS HUB"
             options.showName="A"
             options.showIconOnly=true
-            options.subtitle="v0.12 · Made by Ilham Ziqri"
+            options.subtitle="v0.13 · Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
             options.locale="en"
             options.Locale="en"
@@ -1967,7 +2042,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: the feature interface is not ready.")
-local API = {Version="0.12.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.13.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
