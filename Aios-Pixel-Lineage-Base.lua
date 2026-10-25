@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.11 - compact English UI, expanded sections and native pixel item art
+-- AIOS HUB / Pixel Lineage 0.12 - dense responsive controls and direct item icon rendering
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -41,7 +41,7 @@ return function(API)
         if API.InventoryHost then
             local p=API.InventoryHost.Profile()
             if type(p)=="table"then return p end
-            return nil,"Inventory data is not ready. Open the game bag, then Refresh."
+            return nil,"Waiting for your character inventory. Press Refresh after it finishes loading."
         end
         local adapter=env.AiosFeatureData
         if type(adapter)=="table"and type(adapter.Profile)=="function"then
@@ -62,12 +62,12 @@ return function(API)
             if ok and type(result)=="table"then objects=result end
         end
         if type(objects)~="table"then
-            return nil,"Inventory is unavailable. Open the game bag, then Refresh. If it stays empty, this executor may not support the data reader."
+            return nil,"Inventory is not ready. Wait for your character to load, then Refresh. If it stays empty, this executor may not support the data reader."
         end
         for _,candidate in pairs(objects)do
             if valid(candidate)then view=candidate;return rawget(view,"profile")end
         end
-        return nil,"Open the game bag once, then press Refresh."
+        return nil,"Open Inventory to load your items."
     end
     -- The builder inserts the inventory snapshot reader here.
     local makeReader=(function()
@@ -87,7 +87,7 @@ return function(deps)
     function reader.Read()
         local profile,reason=deps.profile()
         if type(profile)~="table"then
-            return {ready=false,rows={},message=reason or"Open the game bag once, then press Refresh."}
+            return {ready=false,rows={},message=reason or"Open Inventory to load your items."}
         end
         local config,gear=deps.catalogs()
         config=type(config)=="table"and config or{}
@@ -106,7 +106,7 @@ return function(deps)
                     rows[#rows+1]={id=tostring(id),name=tostring(definition.name or id),
                         kind="item",quantity=count,rarity=tostring(definition.rarity or""),
                         category=tostring(definition.type or definition.kind or"Item"),
-                        art=deps.art and deps.art(definition)or nil}
+                        art=deps.art and deps.art(definition)or nil,iconKey=type(definition.icon)=="string"and definition.icon or nil}
                     itemKinds=itemKinds+1
                     itemTotal=itemTotal+count
                 end
@@ -156,7 +156,8 @@ return function(deps)
                     class=described.class or definition.class,
                     effects=effects,effectsReady=effectsReady,
                     power=described.power,set=definition.set,affixes=described.affixes,
-                    art=deps.art and deps.art(described,piece,definition)or nil}
+                    art=deps.art and deps.art(described,piece,definition)or nil,
+                    iconKey=type(described.icon or definition.icon)=="string"and(described.icon or definition.icon)or nil}
                 gearTotal=gearTotal+1
                 if worn then equippedTotal=equippedTotal+1 end
             end
@@ -324,6 +325,159 @@ end
 return Art
 
 end)()
+    local makeRenderer=(function()
+-- Draw only through the game's icon modules, into a private off-screen cache.
+-- No native Gear window, inventory commands, asset guesses, or polling loop.
+return function(window,Art,resolveModules)
+    local renderer={}
+    local modules,root,adapter
+    local cache={}
+    local alive=true
+    local white=Color3.fromRGB(255,255,255)
+    local function capture(node)
+        if typeof(node)~="Instance"or not node:IsA("GuiObject")then return end
+        if node:IsA("ImageLabel")or node:IsA("ImageButton")then
+            return Art.From({image=node.Image,ImageRectOffset=node.ImageRectOffset,ImageRectSize=node.ImageRectSize})
+        end
+        local children=node:GetDescendants()
+        if#children==0 or#children>192 then return end
+        local drawn=false
+        for _,child in ipairs(children)do
+            if child:IsA("LuaSourceContainer")or child:IsA("ViewportFrame")then return end
+            if child:IsA("Frame")or(child:IsA("ImageLabel")and child.Image~="")then drawn=true end
+        end
+        if drawn then return{kind="pixels",node=node}end
+    end
+    local function data(value)
+        if typeof(value)=="Instance"then return capture(value)end
+        return Art.From({icon=value})
+    end
+    local function clear(stage)
+        for _,child in ipairs(stage:GetChildren())do child:Destroy()end
+    end
+    local function draw(candidate,stage,key)
+        local fn,m,style=candidate.fn,candidate.module,candidate.style
+        local ok,result
+        if candidate.direct then
+            if style==1 then ok,result=pcall(fn,stage,64,white)
+            else ok,result=pcall(fn,m,stage,64,white)end
+        elseif style==1 then ok,result=pcall(fn,stage,key,64,white)
+        elseif style==2 then ok,result=pcall(fn,key,stage,64,white)
+        elseif style==3 then ok,result=pcall(fn,stage,key,0,0,64,white)
+        else ok,result=pcall(fn,m,stage,key,64,white)end
+        if not ok then clear(stage);return end
+        local art=data(result)
+        if art then
+            if art.node and art.node.Parent==nil then art.node.Parent=stage end
+            return art
+        end
+        return capture(stage)
+    end
+    function renderer.Get(row)
+        if not alive then return end
+        if row.art then return row.art end
+        local identity=row.kind.."/"..row.id
+        if cache[identity]~=nil then return cache[identity]or nil end
+        if not modules then
+            local ok,value=pcall(resolveModules)
+            modules=ok and type(value)=="table"and value or{}
+        end
+        local keys={}
+        local function add(key)
+            if type(key)=="string"and key~=""then
+                for _,old in ipairs(keys)do if old==key then return end end
+                keys[#keys+1]=key
+            end
+        end
+        add(row.iconKey)
+        for _,name in ipairs({"PixelIcons","GearIcons"})do
+            local m=modules[name]
+            local helper=type(m)=="table"and m[row.kind=="gear"and"GearIcon"or"ItemIcon"]
+            if type(helper)=="function"then
+                local ok,value=pcall(helper,row.id)
+                if ok then
+                    local art=data(value)
+                    if art then cache[identity]=art;return art end
+                    add(value)
+                end
+            end
+        end
+        add(row.id)
+        for _,m in pairs(modules)do
+            if type(m)=="table"then
+                for _,key in ipairs(keys)do
+                    for _,map in ipairs({m,type(m.ByItem)=="table"and m.ByItem or{},type(m.Icons)=="table"and m.Icons or{}})do
+                        local art=data(map[key])
+                        if art then cache[identity]=art;return art end
+                    end
+                end
+            end
+        end
+        local canDraw=adapter~=nil
+        for _,m in pairs(modules)do
+            if type(m)=="table"then
+                for _,method in ipairs({"Draw","DrawIcon","Render","RenderIcon","Icon","Create","Make"})do
+                    if type(m[method])=="function"then canDraw=true end
+                end
+                for _,key in ipairs(keys)do if type(m[key])=="function"then canDraw=true end end
+            end
+        end
+        if not canDraw then cache[identity]=false;return end
+        if not root then
+            root=window:Create("Frame",{Name="AiosItemArtCache",Visible=false,BackgroundTransparency=1,
+                Size=UDim2.fromOffset(64,64),Parent=window.screenGui or window.main})
+        end
+        local stage=Instance.new("Frame")
+        stage.Name="ItemArt";stage.Size=UDim2.fromOffset(64,64);stage.BackgroundTransparency=1;stage.Parent=root
+        if adapter then
+            for _,key in ipairs(keys)do
+                local art=draw(adapter,stage,key)
+                if art then cache[identity]=art;return art end
+                clear(stage)
+            end
+        end
+        local candidates={}
+        for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
+            local m=modules[name]
+            if type(m)=="table"then
+                for _,method in ipairs({"Draw","DrawIcon","Render","RenderIcon","Icon","Create","Make"})do
+                    if type(m[method])=="function"then
+                        for style=1,4 do candidates[#candidates+1]={module=m,fn=m[method],style=style}end
+                    end
+                end
+                for _,key in ipairs(keys)do
+                    if type(m[key])=="function"then candidates[#candidates+1]={module=m,fn=m[key],style=1,direct=true}end
+                end
+            end
+        end
+        -- Cold-path discovery is bounded and the successful adapter is reused.
+        local attempts=0
+        for _,candidate in ipairs(candidates)do
+            for _,key in ipairs(keys)do
+                attempts=attempts+1
+                local art=draw(candidate,stage,key)
+                if art then if not candidate.direct then adapter=candidate end;cache[identity]=art;return art end
+                clear(stage)
+                if attempts>=32 then break end
+            end
+            if attempts>=32 then break end
+        end
+        stage:Destroy();cache[identity]=false
+    end
+    function renderer.Destroy()
+        alive=false;cache={};modules=nil;adapter=nil
+        if root then window:DestroySubtree(root);root=nil end
+    end
+    function renderer.Refresh()
+        -- A module that replicated after the first snapshot can be tried again.
+        -- Successful cached drawings stay intact; failures never cause a loop.
+        modules=nil
+        for key,value in pairs(cache)do if value==false then cache[key]=nil end end
+    end
+    return renderer
+end
+
+end)()
     local makeList=(function()
 -- Nine reusable cards, three columns. Missing art stays text-only.
 return function(window,tab)
@@ -331,7 +485,7 @@ return function(window,tab)
     list.main=window:Create("Frame",{Name="InventoryList",Size=UDim2.new(1,-20,0,64),
         BackgroundTransparency=1,BorderSizePixel=0,Parent=tab.tabPage})
     list.container=window:Create("Frame",{Name="Rows",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=list.main})
-    list.grid=window:Create("UIGridLayout",{CellPadding=UDim2.fromOffset(8,8),CellSize=UDim2.new(1/3,-6,0,144),
+    list.grid=window:Create("UIGridLayout",{CellPadding=UDim2.fromOffset(8,8),CellSize=UDim2.new(1/3,-6,0,128),
         FillDirection=Enum.FillDirection.Horizontal,FillDirectionMaxCells=3,SortOrder=Enum.SortOrder.LayoutOrder,Parent=list.container})
     list.empty=window:Create("TextLabel",{Name="Empty",Text="Open Inventory or press Refresh to load your items.",TextWrapped=true,
         FontFace=window.theme.Font,TextSize=14,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Parent=list.main},{TextColor3="ContentColor"})
@@ -366,7 +520,7 @@ return function(window,tab)
     function list:MakeRow(order)
         local cell={connections={}}
         cell.main=window:Create("TextButton",{Name="ItemCard",Text="",AutoButtonColor=false,BorderSizePixel=0,ClipsDescendants=true,
-            LayoutOrder=order,Size=UDim2.new(1/3,-6,0,144),Parent=self.container},{BackgroundColor3="StatBackground"})
+            LayoutOrder=order,Size=UDim2.new(1/3,-6,0,128),Parent=self.container},{BackgroundColor3="StatBackground"})
         window:Create("UICorner",{CornerRadius=UDim.new(0,8),Parent=cell.main})
         cell.stroke=window:Create("UIStroke",{Transparency=.7,Thickness=1,Parent=cell.main})
         cell.pick=window:Create("TextButton",{Name="SelectForSale",Text="",AutoButtonColor=false,
@@ -388,10 +542,11 @@ return function(window,tab)
             local imageShown=self.row~=nil and self.image and self.image.Image~=""and self.image.IsLoaded==true
             local shown=imageShown or self.row~=nil and self.pixelHost~=nil
             if self.image then self.image.Visible=not not imageShown end
-            self.name.Position=UDim2.new(0,6,1,shown and-74 or-112)
-            self.name.Size=UDim2.new(1,-12,0,shown and 32 or 48)
-            self.meta.Position=UDim2.new(0,6,1,shown and-42 or-61)
-            self.meta.Size=UDim2.new(1,-12,0,shown and 18 or 32)
+            self.name.Position=UDim2.new(0,6,1,shown and-66 or-96)
+            self.name.Size=UDim2.new(1,-12,0,shown and 28 or 40)
+            self.meta.Position=UDim2.new(0,6,1,shown and-36 or-50)
+            self.meta.Size=UDim2.new(1,-12,0,shown and 16 or 28)
+            self.identity.Position=UDim2.new(0,6,1,-18);self.identity.Size=UDim2.new(1,-12,0,14)
         end
         function cell:SetImage(art)
             local source=art and art.node
@@ -404,7 +559,7 @@ return function(window,tab)
                         local width=source.Size.X.Scale==0 and source.Size.X.Offset or source.AbsoluteSize.X
                         local height=source.Size.Y.Scale==0 and source.Size.Y.Offset or source.AbsoluteSize.Y
                         width=math.max(1,width);height=math.max(1,height)
-                        self.pixelHost=window:Create("Frame",{Name="NativeItemArt",Size=UDim2.new(1,-20,0,50),
+                        self.pixelHost=window:Create("Frame",{Name="NativeItemArt",Size=UDim2.new(1,-20,0,44),
                             Position=UDim2.new(.5,0,0,12),AnchorPoint=Vector2.new(.5,0),BackgroundTransparency=1,ClipsDescendants=true,Parent=self.main})
                         clone.Name="PixelArt";clone.AnchorPoint=Vector2.new(.5,.5);clone.Position=UDim2.fromScale(.5,.5)
                         clone.Size=UDim2.fromOffset(width,height);clone.AutomaticSize=Enum.AutomaticSize.None;clone.Visible=true;clone.Active=false
@@ -413,9 +568,9 @@ return function(window,tab)
                             elseif node:IsA("GuiButton")then node.Active=false;node.AutoButtonColor=false end
                         end
                         clone.Parent=self.pixelHost
-                        local fit=window:Create("UIScale",{Scale=math.min(50/width,50/height),Parent=clone})
+                        local fit=window:Create("UIScale",{Scale=math.min(44/width,44/height),Parent=clone})
                         self.pixelFit=function()
-                            if self.pixelHost then fit.Scale=math.min(math.max(1,self.pixelHost.AbsoluteSize.X)/width,50/height)end
+                            if self.pixelHost then fit.Scale=math.min(math.max(1,self.pixelHost.AbsoluteSize.X)/width,44/height)end
                         end
                         if not self.pixelResize then
                             self.pixelResize=window:ConnectFor(self,self.main:GetPropertyChangedSignal("AbsoluteSize"),function()if self.pixelFit then self.pixelFit()end end)
@@ -426,7 +581,7 @@ return function(window,tab)
             end
             if art and art.image and not self.image then
                 self.image=window:Create("ImageLabel",{Name="ItemImage",Image="",Visible=false,BackgroundTransparency=1,
-                    Size=UDim2.new(1,-24,0,50),Position=UDim2.new(.5,0,0,12),AnchorPoint=Vector2.new(.5,0),
+                    Size=UDim2.new(1,-24,0,44),Position=UDim2.new(.5,0,0,12),AnchorPoint=Vector2.new(.5,0),
                     ScaleType=Enum.ScaleType.Fit,ResampleMode=Enum.ResamplerMode.Pixelated,Parent=self.main})
                 window:ConnectFor(self,self.image:GetPropertyChangedSignal("IsLoaded"),function()self:LayoutImage()end)
             end
@@ -491,7 +646,7 @@ return function(window,tab)
             self.pool[i].row=nil;self.pool[i].main.Visible=false;self.pool[i]:SetImage(nil)
         end
         local gridRows=math.ceil(math.min(9,#rows)/3)
-        local height=gridRows>0 and gridRows*144+(gridRows-1)*8 or 64
+        local height=gridRows>0 and gridRows*128+(gridRows-1)*8 or 64
         if height~=self.height then
             self.height=height
             self.main.Size=UDim2.new(1,-20,0,height)
@@ -812,7 +967,18 @@ end)()
     local snapshot={ready=false,rows={}}
     local query,category,page="","All",1
     local pageSize=9
-    local artIndex
+    local renderer=makeRenderer(window,Art,function()
+        local root=game:GetService("ReplicatedStorage"):FindFirstChild("PlatformBattles")
+        local shared=root and root:FindFirstChild("Shared")
+        local scripts=player:FindFirstChild("PlayerScripts")
+        local client=scripts and scripts:FindFirstChild("PlatformBattlesClient")
+        local result={}
+        for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
+            local module=client and client:FindFirstChild(name)or shared and shared:FindFirstChild(name)
+            if module then local ok,value=pcall(require,module);if ok and type(value)=="table"then result[name]=value end end
+        end
+        return result
+    end)
     local summary,listing,saleStatus,sales
     local update
     local function saleChanged()if update then update(false)end end
@@ -839,7 +1005,7 @@ end)()
     toolbar:CreateButton({name="Refresh",callback=function()if update then update(true)end end})
     toolbar:CreateButton({name="Previous",callback=function()page=math.max(1,page-1);if update then update(false)end end})
     toolbar:CreateButton({name="Next",callback=function()page=page+1;if update then update(false)end end})
-    summary=tab:CreateText({text="Open the game bag once, then press Refresh."})
+    summary=tab:CreateText({text="Open Inventory to load your items."})
     if summary.body then summary.body.RichText=false end
     saleStatus=tab:CreateText({text=sales.message})
     if saleStatus.body then saleStatus.body.RichText=false end
@@ -894,14 +1060,11 @@ end)()
     update=function(read)
         if not alive or window.unloaded then return end
         if read then
+            renderer.Refresh()
             if not sales.running and API.InventoryHost and API.InventoryHost.Reconcile then API.InventoryHost.Reconcile()end
             local ok,result=pcall(reader.Read)
-            snapshot=ok and result or{ready=false,rows={},message="Inventory is unavailable. Open the game bag, then Refresh."}
+            snapshot=ok and result or{ready=false,rows={},message="Inventory is not ready. Wait for your character to load, then Refresh."}
             sales:Prune(snapshot)
-            local playerGui=player:FindFirstChild("PlayerGui")
-            local nativeGui=view and valid(view)and rawget(view,"gui")or playerGui and(playerGui:FindFirstChild("PixelGear")or playerGui)
-            local indexed,result=pcall(Art.Index,nativeGui,window.screenGui)
-            artIndex=indexed and result or nil
         end
         saleStatus:Set(tostring(sales:Count()).." gear selected\n"..sales.message)
         if not snapshot.ready then
@@ -920,14 +1083,14 @@ end)()
         for index=(page-1)*pageSize+1,math.min(page*pageSize,#rows)do
             visibleRows[#visibleRows+1]=rows[index]
         end
-        listing:SetRows(visibleRows,rarityColors,nil,actions,function(row)return Art.Find(row,artIndex)end)
+        listing:SetRows(visibleRows,rarityColors,nil,actions,renderer.Get)
     end
     API.RefreshInventory=function()update(true);return snapshot end
     if tab.topbarItemInteract then
         window:Connect(tab.topbarItemInteract.MouseButton1Click,function()task.defer(function()update(true)end)end)
     end
     update(false)
-    return {Destroy=function()alive=false;sales:Destroy();listing:Clear();API.Inventory=nil;API.RefreshInventory=nil;API.CompareGear=nil end}
+    return {Destroy=function()alive=false;sales:Destroy();listing:Clear();renderer.Destroy();API.Inventory=nil;API.RefreshInventory=nil;API.CompareGear=nil end}
 end
 ]=]
 -- EDITABLE UI END
@@ -1284,6 +1447,124 @@ return function(container,displayOrder)
     return gui
 end
 ]=]
+local installDensity=(function()
+-- Dense native controls and responsive section columns; gameplay callbacks stay native.
+return function(window)
+    local density={tabs={}}
+    local create=window.Create
+    window.Create=function(self,class,props,...)
+        if type(props)=="table"and(class=="TextLabel"or class=="TextButton"or class=="TextBox")and type(props.TextSize)=="number"and props.TextSize>=12 then
+            local copy={};for k,v in pairs(props)do copy[k]=v end
+            copy.TextSize=math.max(11,math.floor(props.TextSize*.85+.5));props=copy
+        end
+        return create(self,class,props,...)
+    end
+    local seen={}
+    local function height(control,value)
+        local size=control.main.Size
+        control.main.Size=UDim2.new(size.X.Scale,size.X.Offset,0,value)
+    end
+    function density.Control(control)
+        if type(control)~="table"or not control.main or control._AiosDense then return end
+        control._AiosDense=true
+        local kind=control.__type
+        if kind=="Toggle"or kind=="Button"or kind=="Input"or kind=="Dropdown"or kind=="Keybind"then
+            height(control,38)
+            if control.container then
+                control.container.Position=UDim2.new(0,12,.5,0)
+                control.container.AnchorPoint=Vector2.new(0,.5)
+            end
+            if control.box then
+                control.box.Position=UDim2.new(1,-8,.5,0);control.box.AnchorPoint=Vector2.new(1,.5)
+                control.box.Size=UDim2.new(control.box.Size.X.Scale,control.box.Size.X.Offset,0,26)
+            end
+        elseif kind=="Section"then height(control,30)
+        elseif kind=="Statistic"and not control.compact then
+            height(control,66)
+            if control.titleContainer then control.titleContainer.Position=UDim2.fromOffset(12,8);control.titleContainer.Size=UDim2.new(1,-24,0,24)end
+            if control.title then control.title.TextSize=14 end
+            if control.iconLabel then control.iconLabel.Size=UDim2.fromOffset(24,24)end
+            if control.valueHost then control.valueHost.Position=UDim2.new(0,12,1,-10)end
+            if control.changeHost then control.changeHost.Position=UDim2.new(1,-12,1,-10)end
+        elseif kind=="Slider"and not control.minimal then
+            control._applyLayout=function(self)
+                height(self,54)
+                self.container.Position=UDim2.fromOffset(12,7);self.container.AnchorPoint=Vector2.new(0,0)
+                self.container.Size=UDim2.new(1,-24,0,16)
+                self.containerLayout.FillDirection=Enum.FillDirection.Horizontal
+                self.titleFlex.FlexMode=Enum.UIFlexMode.Fill
+                self.valueHost.AutomaticSize=Enum.AutomaticSize.X;self.valueHost.Size=UDim2.fromOffset(0,16)
+                self.track.AnchorPoint=Vector2.new(0,0);self.track.Position=UDim2.fromOffset(12,34)
+                self.track.Size=UDim2.new(1,-24,0,8)
+                self.handle.Size=UDim2.fromOffset(27,16)
+            end
+            control:_applyLayout()
+        end
+        if control.descriptor and control.descriptor.body then control.descriptor.body.TextSize=11 end
+    end
+    function density.Tab(tab)
+        if tab._AiosDensity or tab.neglectSelector then return end
+        tab._AiosDensity=true
+        local originalPage=tab.tabPage
+        local records,section={},0
+        local columns
+        if tab.name~="Inventory"then
+            local root=window:Create("Frame",{Name="AiosColumns",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+                BackgroundTransparency=1,LayoutOrder=0,Parent=originalPage})
+            window:Create("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,VerticalAlignment=Enum.VerticalAlignment.Top,
+                SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,8),Parent=root})
+            columns={}
+            for i=1,2 do
+                local col=window:Create("Frame",{Name="Column"..i,Size=UDim2.new(.5,-4,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+                    BackgroundTransparency=1,LayoutOrder=i,Parent=root})
+                window:Create("UIListLayout",{FillDirection=Enum.FillDirection.Vertical,SortOrder=Enum.SortOrder.LayoutOrder,
+                    HorizontalAlignment=Enum.HorizontalAlignment.Center,Padding=UDim.new(0,4),Parent=col})
+                columns[i]=col
+            end
+        end
+        tab._AiosReflow=function()
+            if not window._AiosReady or not columns then return end
+            local width=window.size and window.size.X.Offset or 0
+            local wide=width-(window.layout.railWidth or 0)>=700
+            for i,col in ipairs(columns)do col.Size=UDim2.new(wide and .5 or 1,wide and-4 or 0,0,0);col.Visible=wide or i==1 end
+            for _,entry in ipairs(records)do
+                local control=entry.control
+                if control.main and control.main.Parent then
+                    local parent=columns[wide and(entry.section%2+1)or 1]
+                    control.main.Parent=parent
+                    if control.descriptor and control.descriptor.main then control.descriptor.main.Parent=parent end
+                end
+            end
+            tab._AiosColumnCount=wide and 2 or 1
+        end
+        density.tabs[#density.tabs+1]=tab
+        local function wrap(owner,record)
+            for _,method in ipairs({"CreateToggle","CreateButton","CreateDropdown","CreateInput","CreateSlider","CreateKeybind","CreateSection","CreateText","CreateStat","CreateGroup"})do
+                local fn=owner[method]
+                if type(fn)=="function"then
+                    owner[method]=function(self,...)
+                        local control=fn(self,...)
+                        if control and not seen[control]then
+                            seen[control]=true
+                            density.Control(control)
+                            if record then
+                                if method=="CreateSection"then section=section+1 end
+                                records[#records+1]={control=control,section=math.max(0,section-1)}
+                            end
+                            if method=="CreateGroup"then wrap(control,false)end
+                            if window._AiosReady then tab._AiosReflow()end
+                        end
+                        return control
+                    end
+                end
+            end
+        end
+        wrap(tab,true)
+    end
+    return density
+end
+
+end)()
 function Style.BrandText(text)
     if type(text)~="string"then return text end
     return(text:gsub("[Rr][Aa][Yy][Ff][Ii][Ee][Ll][Dd]","AIOS"))
@@ -1312,6 +1593,8 @@ function Style.Finalize(window)
             end
         end
     end
+    window._AiosReady=true
+    for _,tab in ipairs(window.tabs)do if tab._AiosReflow then tab._AiosReflow()end end
 end
 Style.Theme = {
     WindowColor=ColorSequence.new(rgb(18,21,28),rgb(29,31,39)),
@@ -1343,7 +1626,7 @@ Style.Theme = {
 function Style.Install(window)
     if window._AiosCompact then return end
     window._AiosCompact=true
-    local scale=.9
+    local scale=.85
     local uiScale=window:Create("UIScale",{Name="AiosCompactScale",Scale=scale,Parent=window.main})
     window.AiosScale=uiScale
     local layout={}
@@ -1360,6 +1643,7 @@ function Style.Install(window)
     layout.rowIconSize=18
     layout.railPadding=9
     window.layout=layout
+    local density=installDensity(window)
     -- Replace blurred shadows with disabled, tween-compatible strokes. The
     -- controls keep their Color/Transparency targets without a blur renderer.
     window.CreateGlow=function(self,parent,color)
@@ -1397,7 +1681,7 @@ function Style.Install(window)
     local applyRail=window._applyRailWidth
     window._applyRailWidth=function(self)
         applyRail(self)
-        for _,tab in ipairs(self.tabs)do reflowTab(tab)end
+        for _,tab in ipairs(self.tabs)do reflowTab(tab);if tab._AiosReflow then tab._AiosReflow()end end
     end
     if window.tabListLayout then window.tabListLayout.Padding=UDim.new(0,4)end
     for _,child in ipairs(window.tabList:GetChildren())do
@@ -1429,8 +1713,8 @@ function Style.Install(window)
     window._applyWindowSize=function(self)
         if self.unloaded then return end
         local view=viewport()
-        local width=math.max(220,math.min(760/scale,(view.X-24)/scale,view.X*.86/scale))
-        local height=math.max(180,math.min(520/scale,(view.Y-24)/scale,view.Y*.84/scale))
+        local width=math.max(220,math.min(860/scale,(view.X-24)/scale,view.X*.94/scale))
+        local height=math.max(180,math.min(540/scale,(view.Y-24)/scale,view.Y*.86/scale))
         local size=UDim2.fromOffset(math.floor(width),math.floor(height))
         local changed=size~=self.size
         self.size=size
@@ -1516,6 +1800,7 @@ function Style.Install(window)
                 end
             end
         end
+        density.Tab(tab)
         local apply=tab._applyVisual
         if type(apply)=="function"then
             tab._applyVisual=function(self,state,...)
@@ -1589,7 +1874,7 @@ local function sidebarLibrary(library)
             options.name="AIOS HUB"
             options.showName="A"
             options.showIconOnly=true
-            options.subtitle="Made by Ilham Ziqri"
+            options.subtitle="v0.12 · Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
             options.locale="en"
             options.Locale="en"
@@ -1682,7 +1967,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: the feature interface is not ready.")
-local API = {Version="0.11.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.12.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
