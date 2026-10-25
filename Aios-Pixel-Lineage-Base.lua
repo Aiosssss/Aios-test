@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.16 - stable scrolling, 3x3 bag and castle-to-room act looping
+-- AIOS HUB / Pixel Lineage 0.17 - 3 columns x 9 rows and independent castle-to-room replay
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -688,7 +688,7 @@ end)()(window)
     function renderer.Report()
         if not alive then return "Image renderer is closed."end
         loadModules()
-        local lines={"AIOS ITEM IMAGE REPORT v0.16","UI metadata only; no server commands, account IDs or script source."}
+        local lines={"AIOS ITEM IMAGE REPORT v0.17","UI metadata only; no server commands, account IDs or script source."}
         for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
             local value=modules[name]
             lines[#lines+1]="\n"..name..": "..tostring(moduleStatus[name]or(value and type(value)or"not found"))
@@ -807,7 +807,7 @@ return function(window,Art,resolveView,ready)
                     end
                     if art then
                         native.cache[identity]=art;order[#order+1]=identity;changed=true
-                        while#order>18 do
+                        while#order>54 do
                             local old=table.remove(order,1)
                             local cached=native.cache[old]
                             if cached and cached.node then window:DestroySubtree(cached.node)end
@@ -836,13 +836,14 @@ end
 
 end)()
     local makeList=(function()
--- Nine reusable cards, three columns. Missing art stays text-only.
+-- Twenty-seven reusable cards in three columns and nine rows.
 return function(window,tab)
-    local list={name="Inventory",window=window,tab=tab,pool={},rows={},forgetState=true,connections={},_AiosInventoryGrid=true,rowHeight=128}
-    list.main=window:Create("Frame",{Name="InventoryList",Size=UDim2.new(1,-20,0,64),
-        BackgroundTransparency=1,BorderSizePixel=0,Parent=tab.tabPage})
-    list.container=window:Create("Frame",{Name="Rows",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=list.main})
-    list.grid=window:Create("UIGridLayout",{CellPadding=UDim2.fromOffset(8,8),CellSize=UDim2.new(1/3,-6,0,128),
+    local list={name="Inventory",window=window,tab=tab,pool={},rows={},forgetState=true,connections={},_AiosInventoryGrid=true,rowHeight=112,slotCount=27,gridRows=9,viewportHeight=400}
+    list.main=window:Create("ScrollingFrame",{Name="InventoryList",Size=UDim2.new(1,-20,0,64),
+        AutomaticCanvasSize=Enum.AutomaticSize.None,CanvasSize=UDim2.fromOffset(0,0),ScrollBarThickness=3,
+        ScrollingDirection=Enum.ScrollingDirection.Y,ClipsDescendants=true,BackgroundTransparency=1,BorderSizePixel=0,Parent=tab.tabPage})
+    list.container=window:Create("Frame",{Name="Rows",Size=UDim2.new(1,-5,0,1072),BackgroundTransparency=1,Parent=list.main})
+    list.grid=window:Create("UIGridLayout",{CellPadding=UDim2.fromOffset(8,8),CellSize=UDim2.new(1/3,-6,0,112),
         FillDirection=Enum.FillDirection.Horizontal,FillDirectionMaxCells=3,SortOrder=Enum.SortOrder.LayoutOrder,Parent=list.container})
     list.empty=window:Create("TextLabel",{Name="Empty",Text="Open Inventory or press Refresh to load your items.",TextWrapped=true,
         FontFace=window.theme.Font,TextSize=14,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Parent=list.main},{TextColor3="ContentColor"})
@@ -981,10 +982,15 @@ return function(window,tab)
         return cell
     end
     function list:FitGrid(availableHeight)
-        local rowHeight=math.clamp(math.floor((availableHeight-16)/3),80,128)
+        -- Keep card text readable. Only the bag scrolls through its nine rows.
+        local rowHeight=112
         self.rowHeight=rowHeight
         self.grid.CellSize=UDim2.new(1/3,-6,0,rowHeight)
-        self.height=rowHeight*3+16
+        self.viewportHeight=math.max(120,availableHeight)
+        self.contentHeight=rowHeight*self.gridRows+8*(self.gridRows-1)
+        self.container.Size=UDim2.new(1,-5,0,self.contentHeight)
+        self.main.CanvasSize=UDim2.fromOffset(0,#self.rows>0 and self.contentHeight or 0)
+        self.height=#self.rows>0 and self.viewportHeight or 64
         self.main.Size=UDim2.new(1,-20,0,self.height)
         for _,cell in ipairs(self.pool)do cell.height=rowHeight;cell:LayoutImage()end
     end
@@ -994,7 +1000,7 @@ return function(window,tab)
         self.empty.Visible=#rows==0
         self.empty.Text=message or"No items match this search or filter."
         self.container.Visible=#rows>0
-        for order=1,(#rows>0 and 9 or#self.pool)do
+        for order=1,(#rows>0 and self.slotCount or#self.pool)do
             local row=rows[order]
             local cell=self.pool[order]or self:MakeRow(order)
             if row then
@@ -1025,7 +1031,10 @@ return function(window,tab)
                 cell.stroke.Transparency=.95
             end
         end
-        local height=#rows>0 and self.rowHeight*3+16 or 64
+        self.contentHeight=self.rowHeight*self.gridRows+8*(self.gridRows-1)
+        self.container.Size=UDim2.new(1,-5,0,self.contentHeight)
+        self.main.CanvasSize=UDim2.fromOffset(0,#rows>0 and self.contentHeight or 0)
+        local height=#rows>0 and self.viewportHeight or 64
         if height~=self.height then
             self.height=height
             self.main.Size=UDim2.new(1,-20,0,height)
@@ -1346,7 +1355,7 @@ end)()
     local alive=true
     local snapshot={ready=false,rows={}}
     local query,category,page="","All",1
-    local pageSize=9
+    local pageSize=27
     local renderer=makeRenderer(window,Art,function()
         local root=game:GetService("ReplicatedStorage"):FindFirstChild("PlatformBattles")
         local shared=root and root:FindFirstChild("Shared")
@@ -1389,14 +1398,15 @@ end)()
         callback=function(value)compareFocus=type(value)=="table"and value[1]or value end})
     local toolbar=tab:CreateGroup({direction="Horizontal"})
     toolbar:CreateButton({name="Refresh",callback=function()if update then update(true)end end})
-    toolbar:CreateButton({name="Previous",callback=function()page=math.max(1,page-1);if update then update(false)end end})
-    toolbar:CreateButton({name="Next",callback=function()page=page+1;if update then update(false)end end})
-    toolbar:CreateButton({name="Copy image report",callback=function()
+    toolbar:CreateButton({name="Image report",callback=function()
         local report=renderer.Report()
         local copy=type(setclipboard)=="function"and setclipboard or type(toclipboard)=="function"and toclipboard
         local ok=copy and pcall(copy,report)
         window:Popup({title="Item image report",content=ok and"Copied. Paste the report into the chat if item images are still missing."or report,dismissable=true})
     end})
+    local paging=tab:CreateGroup({direction="Horizontal"})
+    paging:CreateButton({name="Previous",callback=function()page=math.max(1,page-1);if update then update(false)end end})
+    paging:CreateButton({name="Next",callback=function()page=page+1;if update then update(false)end end})
     summary=tab:CreateText({text="Open Inventory to load your items."})
     if summary.body then summary.body.RichText=false end
     saleStatus=tab:CreateText({text=sales.message})
@@ -1516,109 +1526,227 @@ end
 
 end)()
 local RepeatAct=(function()
--- Return through native UI after an act boss, then create a fresh room.
+-- Selected-act loop: boss -> native retreat/return -> confirmed castle -> fresh room.
 return function(clock)
     clock=clock or os.clock
-    local loop={pending=nil,blocked=nil,scope=nil}
-    local ui,writePlan
-    local function value(cells,index)return cells[index]and cells[index][1]end
+    local loop={}
+    local ui,startCells,routeCells,writePlan
+    local function value(cells,index)return cells and cells[index]and cells[index][1]end
     local function act(n)n=tonumber(n);return n and n==math.floor(n)and n>=1 and n<=10000 and n or nil end
-    local function status(cells,text)local fn=value(cells,5);if type(fn)=="function"then fn(text)end end
+    local function result(data)return type(data)=="table"and tostring(data.result or data.outcome or""):lower()or""end
+    local function victory(data)local r=result(data);return r=="victory"or r=="win"or r=="won"end
+    local function battleOf(data)
+        if type(data)~="table"then return end
+        if type(data.snapshot)=="table"then return data.snapshot end
+        if type(data.battle)=="table"then return data.battle end
+        return data
+    end
+    local function active(run)return type(run)=="table"and run.active==true and run.phase~="ended"end
+    local function matching(run,target,difficulty,modifier)
+        return type(run)=="table"and run.difficulty==difficulty and(run.modifier or"none")==modifier
+            and(run.startAct==nil or act(run.startAct)==target)
+    end
+    local function enabled(settings)
+        return type(settings)=="table"and settings.Mode=="Adventure"and settings.RepeatAdventureAct==true
+            and(not startCells or value(startCells,1)==true and value(startCells,2)==true
+                and not value(startCells,3)and not(value(startCells,4)or{}).blocked)
+    end
+    local function status(cells,text)
+        if loop.message==text then return end
+        loop.message=text
+        local fn=value(cells,5);if type(fn)=="function"then fn(text)end
+    end
     local function send(cells,command,payload)
         local dispatch=value(cells,9)
-        return type(dispatch)=="function"and pcall(dispatch,command,payload)
+        if type(dispatch)~="function"then return false end
+        local ok,accepted=pcall(dispatch,command,payload)
+        return ok and accepted~=false
     end
-    local function castle(run)
-        if type(run)=="table"and run.active==true and run.phase~="ended"then return false end
+    local function inRun()
+        if ui and type(ui.InRun)=="function"then local ok,v=pcall(ui.InRun);if ok and type(v)=="boolean"then return v end end
+    end
+    local function castle(run,returning)
+        if loop.inBattle or inRun()==true then return false end
+        if active(run)and not(returning and inRun()==false)then return false end
         if not ui or type(ui.IsCastle)~="function"then return false end
         local ok,yes=pcall(ui.IsCastle)
         return ok and yes==true
     end
-    local function waitRoom(target,difficulty,modifier,delay)
+    local function waitRoom(target,difficulty,modifier,delay,oldId)
         delay=tonumber(delay)or 1
         if delay~=delay or math.abs(delay)==math.huge then delay=1 end
-        return{stage="room",target=target,difficulty=difficulty,modifier=modifier,due=clock()+math.min(30,math.max(0,delay))}
+        return{stage="room",target=target,difficulty=difficulty,modifier=modifier,
+            due=clock()+math.min(30,math.max(0,delay)),runId=oldId,began=clock()}
     end
     function loop.Configure(adapter)ui=adapter end
     function loop.SetPlanWriter(writer)writePlan=writer end
-    function loop.Reset()loop.pending=nil;loop.blocked=nil;loop.scope=nil end
+    function loop.BindStart(cells)startCells=cells end
+    function loop.BindRoute(cells)routeCells=cells end
+    function loop.Reset()
+        loop.pending=nil;loop.blocked=nil;loop.scope=nil;loop.observed=nil;loop.boss=nil;loop.message=nil
+        loop.snapshot=nil;loop.inBattle=false
+    end
+    function loop.OwnsLobby()return loop.pending and loop.pending.stage=="room"and loop.pending.sent==true end
+    function loop.HandlesReplay()
+        return enabled(value(routeCells,2)or value(startCells,8))
+    end
+    -- Remember the actual boss choice sent by the normal route controller.
+    function loop.Route(payload,run)
+        local settings=value(routeCells,2)or value(startCells,8)
+        if not enabled(settings)or type(payload)~="table"or payload.action~="vote"or type(run)~="table"then return end
+        local choice=type(run.choices)=="table"and run.choices[payload.choice]
+        local target=act(settings.StartAct)
+        if type(choice)=="table"and(choice.type or choice.kind)=="boss"and act(run.act)==target
+            and matching(run,target,settings.Difficulty,settings.Modifier or"none")then
+            loop.boss={runId=run.id,target=target}
+        else loop.boss=nil end
+    end
     function loop.Event(kind,data)
+        if kind=="RunState"and type(data)=="table"then
+            loop.snapshot=data
+            if data.phase=="choose"or data.phase=="event"or data.phase=="story"or data.phase=="ended"then loop.inBattle=false end
+        end
+        local boss=loop.boss
+        if kind=="BattleStarted"or kind=="BattleUpdated"then
+            local battle=battleOf(data)
+            loop.inBattle=battle~=nil and battle.active~=false and battle.phase~="ended"
+            if boss and battle and(battle.runId==nil or battle.runId==boss.runId)then
+                boss.started=true;boss.battleId=battle.id or battle.Id or boss.battleId
+            end
+        elseif kind=="BattleEnded"then
+            loop.inBattle=false
+            local battle=battleOf(data)
+            if boss and boss.started and battle and(battle.runId==nil or battle.runId==boss.runId)
+                and(boss.battleId==nil or(battle.id or battle.Id)==boss.battleId)and(victory(data)or victory(battle))then boss.cleared=true end
+        end
         local pending=loop.pending
         if not pending then return end
         if kind=="RunStart"and pending.stage=="room"and pending.sent then pending.started=true end
-        if kind=="RunState"and pending.stage=="room"and pending.sent and type(data)=="table"and data.active==true
-            and act(data.act)==pending.target and(act(data.startAct)or 1)==pending.target and data.difficulty==pending.difficulty
-            and(data.modifier or"none")==pending.modifier and(pending.started or data.id~=pending.runId)then pending.confirmed=true end
-        if kind=="RunLobby"and pending.stage=="room"and pending.sent and type(data)=="table"and(data.failed==true or data.ok==false)then
-            loop.blocked="New room was not accepted: "..tostring(data.reason or data.message or"check the current game state"):sub(1,180)
-            loop.pending=nil
+        if kind=="RunLobby"and pending.stage=="room"and pending.sent and type(data)=="table"then
+            if data.failed==true or data.ok==false then
+                loop.blocked="New room was not accepted: "..tostring(data.reason or data.message or"check the current game state"):sub(1,160)
+                loop.pending=nil
+            elseif data.state=="lobby"then pending.lobby=data end
         end
     end
-    function loop.Step(cells)
-        local settings,run=value(cells,2),value(cells,1)
-        if type(settings)~="table"or settings.Mode~="Adventure"or settings.RepeatAdventureAct~=true then loop.Reset();return false end
+    local function step(cells)
+        local settings,run=value(cells,2),loop.snapshot or value(cells,1)
+        if not enabled(settings)then loop.Reset();return false end
         local target=act(settings.StartAct)
         if not target then return false end
         local difficulty,modifier=settings.Difficulty,settings.Modifier or"none"
         local scope=target.."/"..tostring(difficulty).."/"..tostring(modifier)
-        if loop.scope~=scope then loop.Reset();loop.scope=scope end
+        if loop.scope~=scope then
+            local snapshot,battle=loop.snapshot,loop.inBattle
+            loop.Reset();loop.scope=scope;loop.snapshot=snapshot;loop.inBattle=battle
+        end
         if loop.blocked then status(cells,loop.blocked);return true end
         local current=type(run)=="table"and act(run.act)
-        local matches=type(run)=="table"and(act(run.startAct)or 1)==target and run.difficulty==difficulty and(run.modifier or"none")==modifier
+        local matches=matching(run,target,difficulty,modifier)
         local pending=loop.pending
         if pending then
             if pending.stage=="return"then
-                if castle(run)then
-                    loop.pending=waitRoom(target,difficulty,modifier,settings.ReplayDelay);loop.pending.runId=pending.runId
-                    status(cells,"Castle confirmed; preparing a new room for Act "..target);return true
+                if castle(run,true)then
+                    pending.castleAt=pending.castleAt or clock()
+                    if clock()-pending.castleAt>=.5 then
+                        loop.pending=waitRoom(target,difficulty,modifier,settings.ReplayDelay,pending.runId)
+                        status(cells,"Castle confirmed; preparing a new room for Act "..target)
+                    end
+                    return true
                 end
-                if clock()-pending.began>=45 then loop.pending=nil;loop.blocked="Return to castle was not confirmed";status(cells,loop.blocked);return true end
-                if not pending.clicked and clock()>=(pending.nextTry or 0)then
+                pending.castleAt=nil
+                if clock()-pending.began>=60 then
+                    loop.pending=nil;loop.blocked=pending.clicked and"Return requested, but castle arrival was not confirmed"or"No native castle return control or retreat choice was found"
+                    status(cells,loop.blocked);return true
+                end
+                -- A retreat offered by the current server snapshot is the same
+                -- indexed vote used by the original route controller.
+                if not pending.routeSent and type(run)=="table"and run.phase=="choose"and type(run.choices)=="table"then
+                    for index,choice in ipairs(run.choices)do
+                        if type(choice)=="table"and(choice.type or choice.kind)=="retreat"and choice.enabled~=false then
+                            pending.routeSent=send(cells,"RunAction",{action="vote",choice=index,runId=run.id,round=run.round,phase=run.phase})
+                            if pending.routeSent then pending.clicked=true;pending.lastClick=clock()end
+                            break
+                        end
+                    end
+                end
+                if clock()>=(pending.nextTry or 0)and(pending.clicks or 0)<3 and(not pending.lastClick or clock()-pending.lastClick>=5)then
                     pending.nextTry=clock()+1
                     local ok,clicked=pcall(function()return ui and ui.ReturnToCastle and ui.ReturnToCastle()end)
-                    if ok and clicked then pending.clicked=true end
-                elseif pending.clicked and not pending.confirmedExit and ui and ui.ConfirmReturn then
-                    local ok,confirmed=pcall(ui.ConfirmReturn)
-                    if ok and confirmed then pending.confirmedExit=true end
+                    if ok and clicked then pending.clicked=true;pending.clicks=(pending.clicks or 0)+1;pending.lastClick=clock()end
                 end
-                if clock()-pending.began>=4 and not pending.queried then pending.queried=true;send(cells,"RunAction",{action="state"})end
-                status(cells,pending.clicked and"Returning to castle after the act boss"or"Waiting for the native Return to Castle control")
+                if pending.clicked and ui and ui.ConfirmReturn and clock()>=(pending.confirmAt or 0)and(pending.confirms or 0)<3 then
+                    pending.confirmAt=clock()+1
+                    local ok,confirmed=pcall(ui.ConfirmReturn)
+                    if ok and confirmed then pending.confirms=(pending.confirms or 0)+1 end
+                end
+                if clock()-pending.began>=5 and not pending.queried then pending.queried=true;send(cells,"RunAction",{action="state"})end
+                status(cells,pending.clicked and"Returning to castle after the act boss"or"Waiting for the game's castle return control")
                 return true
             end
             if pending.stage=="room"then
-                if pending.confirmed and matches and current==target then loop.pending=nil;status(cells,"New room confirmed; repeating Act "..target);return false end
+                local newIdentity=type(run)=="table"and run.id~=nil and run.id~=pending.runId
+                local member=settings.PartyRole=="Member"or settings.PartyRole=="Join"
+                if(pending.sent or member)and active(run)and matches and current==target and(pending.started or newIdentity)then
+                    loop.pending=nil;loop.boss=nil;loop.observed={id=run.id,target=target}
+                    status(cells,"New room confirmed; repeating Act "..target);return false
+                end
                 if not pending.sent and clock()>=pending.due then
-                    if not castle(run)then status(cells,"Waiting for castle before creating a new room");return true end
-                    if settings.PartyRole=="Join"then status(cells,"Waiting for the party host to create the next room");return true end
-                    local plan={startAct=target,difficulty=difficulty,modifier=modifier}
-                    if writePlan then writePlan(plan)end
-                    local action=(modifier~="none"or settings.PartyRole=="Host")and"host"or"solo"
-                    pending.sent=true;pending.sentAt=clock()
-                    if not send(cells,"RunLobby",{action=action,startAct=target,difficulty=difficulty})then
-                        loop.pending=nil;loop.blocked="Could not send the native new-room request";status(cells,loop.blocked);return true
+                    if not castle(run,true)then status(cells,"Waiting for castle before creating a new room");return true end
+                    if member then
+                        status(cells,"Waiting for the party host to create the next room");return true
                     end
+                    if writePlan then writePlan({startAct=target,difficulty=difficulty,modifier=modifier})end
+                    pending.host=modifier~="none"or settings.PartyRole=="Host"
+                    pending.sent=true;pending.sentAt=clock()
+                    local accepted=send(cells,"RunLobby",{action=pending.host and"host"or"solo",startAct=target,difficulty=difficulty})
+                    if not accepted then loop.pending=nil;loop.blocked="Could not send the native new-room request";status(cells,loop.blocked);return true end
                 elseif pending.sent then
+                    -- Drive the real host lobby even if another native tick is
+                    -- waiting on a loot transaction or the previous run snapshot.
+                    local lobby=pending.lobby
+                    if pending.host and type(lobby)=="table"and lobby.state=="lobby"and clock()>=(pending.nextLobby or 0)then
+                        local owns=ui and ui.OwnsLobby and ui.OwnsLobby(lobby)
+                        if owns then
+                            local action=(lobby.modifier or"none")~=modifier and"modifier"or"start"
+                            local key=action.."/"..tostring(lobby.revision)
+                            if key~=pending.lobbyKey then
+                                pending.lobbyKey=key;pending.nextLobby=clock()+1
+                                send(cells,"RunLobby",action=="modifier"and{action="modifier",modifier=modifier}or{action="start",revision=lobby.revision})
+                            end
+                        end
+                    end
                     local age=clock()-pending.sentAt
-                    if age>=4 and not pending.queried then pending.queried=true;send(cells,"RunAction",{action="state"})end
-                    if age>=45 then loop.pending=nil;loop.blocked="New room was not confirmed";status(cells,loop.blocked);return true end
+                    if age>=5 and not pending.queried then pending.queried=true;send(cells,"RunAction",{action="state"})end
+                    if age>=60 then loop.pending=nil;loop.blocked="Castle reached; new room start was not confirmed";status(cells,loop.blocked);return true end
                 end
                 status(cells,pending.sent and"Starting a fresh room for Act "..target or"Creating the next room automatically")
                 return true
             end
         end
-        -- Preference survives the existing teleport/resume mechanism.
-        if castle(run)then loop.pending=waitRoom(target,difficulty,modifier,settings.ReplayDelay);status(cells,"Creating a new room for Act "..target);return true end
+        if castle(run,false)then loop.pending=waitRoom(target,difficulty,modifier,settings.ReplayDelay,type(run)=="table"and run.id);status(cells,"Creating a new room for Act "..target);return true end
         if type(run)~="table"or run.dungeon then return false end
-        if run.phase=="ended"and(run.result=="defeat"or run.result=="loss"or run.result=="dead")then return false end
-        local cleared=matches and current and current>target and(run.phase=="choose"or run.phase=="event"or run.phase=="story")
-        if cleared or matches and run.phase=="ended"then
+        if matches and current==target then loop.observed={id=run.id,target=target}end
+        local observed=loop.observed and loop.observed.id==run.id and loop.observed.target==target
+        local advanced=matches and observed and current and current>target and(run.phase=="choose"or run.phase=="event"or run.phase=="story")
+        local bossCleared=loop.boss and loop.boss.cleared and loop.boss.runId==run.id and loop.boss.target==target
+        if not loop.inBattle and(advanced or matches and run.phase=="ended"and victory(run)or bossCleared and run.phase~="battle")then
             loop.pending={stage="return",runId=run.id,began=clock()}
             status(cells,"Act boss cleared; returning to castle before the next room");return true
         end
-        if not matches and run.active==true and(run.phase=="choose"or run.phase=="event"or run.phase=="story")then
-            status(cells,"Active run differs from the selected act; route selection held");return true
-        end
         return false
+    end
+    function loop.Step(cells)
+        if loop.busy then return loop.pending~=nil end
+        loop.busy=true
+        local ok,handled=pcall(step,cells)
+        loop.busy=false
+        if not ok then loop.blocked="Replay controller error: "..tostring(handled):sub(1,150);status(cells,loop.blocked);return true end
+        return handled
+    end
+    function loop.Pump()
+        local cells=routeCells or startCells and{[1]=startCells[5],[2]=startCells[8],[5]=startCells[6],[9]=startCells[10]}
+        if cells then return loop.Step(cells)end
     end
     return loop
 end
@@ -2061,6 +2189,7 @@ return function(window)
                 flow.FillDirection=wide and Enum.FillDirection.Horizontal or Enum.FillDirection.Vertical
                 columns[1].AutomaticSize=Enum.AutomaticSize.None
                 columns[1].Size=UDim2.new(wide and .34 or 1,wide and-4 or 0,0,limit+16)
+                columns[2].AutomaticSize=Enum.AutomaticSize.Y
                 columns[2].Size=UDim2.new(wide and .66 or 1,wide and-4 or 0,0,0)
                 columns[2].LayoutOrder=wide and 2 or 0
                 columns[1].Visible=true;columns[2].Visible=true;columns[3].Visible=false
@@ -2517,7 +2646,7 @@ local function sidebarLibrary(library)
             options.name="AIOS HUB"
             options.showName="A"
             options.showIconOnly=true
-            options.subtitle="v0.16 · Made by Ilham Ziqri"
+            options.subtitle="v0.17 · Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
             options.locale="en"
             options.Locale="en"
@@ -2532,7 +2661,11 @@ local function sidebarLibrary(library)
 end
 local function featureClosure(prototype, upvalues)
     if prototype.id==75 then NativeSaleCells=upvalues end
-    if prototype.id==122 then RepeatAct.SetPlanWriter(function(plan)if upvalues[16]then upvalues[16][1]=plan end end)end
+    if prototype.id==122 then
+        RepeatAct.BindStart(upvalues)
+        RepeatAct.SetPlanWriter(function(plan)if upvalues[16]then upvalues[16][1]=plan end end)
+    end
+    if prototype.id==139 then RepeatAct.BindRoute(upvalues)end
     local function call(...)
         -- Leave the UI library's plain section headings intact. The optional
         -- accordion installer is presentation-only and hides controls by default.
@@ -2542,7 +2675,11 @@ local function featureClosure(prototype, upvalues)
         if prototype.id==158 then return end
         if prototype.id==139 and RepeatAct.Step(upvalues)then return end
         if prototype.id==122 and RepeatAct.Step({[1]=upvalues[5],[2]=upvalues[8],[5]=upvalues[6],[9]=upvalues[10]})then return end
-        if prototype.id==141 then RepeatAct.Event(...)end
+        if prototype.id==123 and RepeatAct.OwnsLobby()then return end
+        if prototype.id==141 then
+            if select(1,...)=="RunReplay"and RepeatAct.HandlesReplay()then return end
+            RepeatAct.Event(...)
+        end
         if prototype.id==145 and(select(1,...)==false or select(2,...)==true)then RepeatAct.Reset()end
         -- Manual inventory batches share the native pending state. Defer native
         -- Auto Sell dispatch until that finite batch has released its reservation.
@@ -2561,6 +2698,7 @@ local function featureClosure(prototype, upvalues)
             end
         end
         local results = lIllllllIlII(l1IIIl1l1(prototype, upvalues, ...))
+        if prototype.id==118 then RepeatAct.Route(select(1,...),upvalues[1]and upvalues[1][1])end
         if prototype.id==141 then
             local kind,data=...
             if kind=="Profile"and type(data)=="table"then
@@ -2623,6 +2761,25 @@ local NativeRunUI=(function()
 return function(player,window)
     local ui={snapshot=nil,at=-math.huge}
     local function normalize(text)return tostring(text or""):gsub("<[^>]*>",""):upper():gsub("[^%w]+"," "):match("^%s*(.-)%s*$")end
+    local exact={
+        ["RETURN TO CASTLE"]=true,["BACK TO CASTLE"]=true,["RETURN TO TOWN"]=true,["BACK TO TOWN"]=true,
+        ["RETURN TO LOBBY"]=true,["BACK TO LOBBY"]=true,["LEAVE RUN"]=true,["EXIT RUN"]=true,
+    }
+    local function returnLabel(label)
+        local compact=label:gsub(" ","")
+        return exact[label]or compact:find("RETURNTOCASTLE",1,true)or compact:find("BACKTOCASTLE",1,true)
+            or compact=="RETURNTOTOWN"or compact=="RETURNTOWN"or compact=="RETURNTOLOBBY"
+            or compact=="BACKTOLOBBY"or compact=="LEAVERUN"or compact=="EXITRUN"
+    end
+    local function runContext(node)
+        for _=1,6 do
+            if not node then break end
+            local name=normalize(node.Name):gsub(" ","")
+            if name:find("RUNMAP",1,true)or name:find("RUNRESULT",1,true)or name:find("JOURNEY",1,true)or name:find("RUNEND",1,true)then return true end
+            node=node.Parent
+        end
+        return false
+    end
     local function visible(node)
         if not node or not node.Parent then return false end
         while node do
@@ -2649,12 +2806,14 @@ return function(player,window)
                             or text:find("BACK TO TOWN",1,true)or text:find("BACK TO LOBBY",1,true))then snapshot.returnPrompt=true end
                     end
                     if node:IsA("GuiButton")and visible(node)then
-                        local labels={normalize(node.Name):gsub(" ","")}
+                        local labels={(normalize(node.Name):gsub(" ",""))}
+                        local ok,focus=pcall(node.GetAttribute,node,"PBFocusKey")
+                        if ok and type(focus)=="string"then labels[#labels+1]=normalize(focus)end
                         if node:IsA("TextButton")then labels[#labels+1]=normalize(node.Text)end
                         for _,child in ipairs(node:GetDescendants())do
                             if child:IsA("TextLabel")and visible(child)then labels[#labels+1]=normalize(child.Text)end
                         end
-                        snapshot.buttons[#snapshot.buttons+1]={node=node,labels=labels}
+                        snapshot.buttons[#snapshot.buttons+1]={node=node,labels=labels,runContext=runContext(node)}
                     end
                 end
             end
@@ -2700,28 +2859,28 @@ return function(player,window)
         ui.snapshot=nil
         return ok
     end
+    function ui.InRun()
+        local ok,value=pcall(function()return player:GetAttribute("PBInRun")end)
+        if ok and type(value)=="boolean"then return value end
+    end
+    function ui.OwnsLobby(lobby)
+        return type(lobby)=="table"and lobby.hostUserId~=nil and lobby.hostUserId==player.UserId
+    end
     function ui.IsCastle()
         local snapshot=scan()
-        if not snapshot.castle or snapshot.returnPrompt then return false end
+        local flag=ui.InRun()
+        if flag==true or flag~=false and not snapshot.castle or snapshot.returnPrompt then return false end
         for _,entry in ipairs(snapshot.buttons)do
             if visible(entry.node)then for _,label in ipairs(entry.labels)do
-                if label=="RETURN TO CASTLE"or label=="RETURN TO LOBBY"or label=="RETURN TO TOWN"
-                    or label=="BACK TO CASTLE"or label=="BACK TO TOWN"or label=="BACK TO LOBBY"
-                    or label=="RETURNTOCASTLE"or label=="RETURNTOTOWN"or label=="RETURNTOWN"or label=="RETURNTOLOBBY"
-                    or label=="BACKTOCASTLE"or label=="BACKTOLOBBY"or label=="LEAVERUN"or label=="EXITRUN"then return false end
+                if returnLabel(label)then return false end
             end end
         end
         return true
     end
     function ui.ReturnToCastle()
-        local exact={
-            ["RETURN TO CASTLE"]=true,["BACK TO CASTLE"]=true,["RETURN TO TOWN"]=true,["BACK TO TOWN"]=true,
-            ["RETURN TO LOBBY"]=true,["BACK TO LOBBY"]=true,
-        }
-        local names={RETURNTOCASTLE=true,BACKTOCASTLE=true,RETURNTOTOWN=true,RETURNTOWN=true,RETURNTOLOBBY=true,LEAVERUN=true,EXITRUN=true}
         for _,entry in ipairs(scan().buttons)do
             for _,label in ipairs(entry.labels)do
-                if exact[label]or names[label]then return click(entry.node)end
+                if returnLabel(label)or entry.runContext and(label=="RETREAT"or label=="CASTLE"or label=="TOWN"or label=="LEAVE ADVENTURE")then return click(entry.node)end
             end
         end
         return false
@@ -2744,7 +2903,8 @@ return function(player,window)
                                 local text=normalize(child.Text)
                                 if text~=""then hasContext=true end
                                 if text:find("RETURN TO CASTLE",1,true)or text:find("RETURN TO TOWN",1,true)or text:find("LEAVE THIS RUN",1,true)
-                                    or text:find("RETURN TO LOBBY",1,true)then returnContext=true end
+                                    or text:find("RETURN TO LOBBY",1,true)or text:find("LEAVE RUN",1,true)
+                                    or text:find("LEAVE THE RUN",1,true)or text:find("BACK TO CASTLE",1,true)then returnContext=true end
                             end
                         end
                     end
@@ -2761,7 +2921,14 @@ end
 
 end)()(player,NativeWindow)
 RepeatAct.Configure(NativeRunUI)
-local API = {Version="0.16.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+-- Keep transitions running when a native loot/lobby gate skips the route tick.
+task.spawn(function()
+    while not NativeWindow.unloaded do
+        RepeatAct.Pump()
+        task.wait(.35)
+    end
+end)
+local API = {Version="0.17.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
