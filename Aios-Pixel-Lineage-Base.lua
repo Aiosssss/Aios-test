@@ -1,4 +1,4 @@
--- AIOS HUB / Pixel Lineage 0.19 - pinned Return Home confirmation and readable inventory controls
+-- AIOS HUB / Pixel Lineage 0.20 - automatic boss chest Continue after reward reveal
 -- Gameplay engine derived from the CinderHub payload supplied by the user (sero).
 -- Edit UI_SOURCE below to replace the UI. It must return function(API).
 -- Public API: State(), Settings(), Set(name,value), Start(), Pause(), Unload(),
@@ -688,7 +688,7 @@ end)()(window)
     function renderer.Report()
         if not alive then return "Image renderer is closed."end
         loadModules()
-        local lines={"AIOS ITEM IMAGE REPORT v0.19","UI metadata only; no server commands, account IDs or script source."}
+        local lines={"AIOS ITEM IMAGE REPORT v0.20","UI metadata only; no server commands, account IDs or script source."}
         for _,name in ipairs({"PixelIcons","GearIcons","PixelUI"})do
             local value=modules[name]
             lines[#lines+1]="\n"..name..": "..tostring(moduleStatus[name]or(value and type(value)or"not found"))
@@ -1506,7 +1506,7 @@ end
 
 local ENGINE_SOURCE=[==[-- Feature engine derived from the supplied CinderHub payload (sero).
 -- Original gameplay dispatcher retained; editable UI and public API added.
-local NativeWindow,NativeControl,NativeUnload,NativeSettings,NativeSave,NativeFeatures,OnEngineUnload,NativeSaleCells
+local NativeWindow,NativeControl,NativeUnload,NativeSettings,NativeSave,NativeFeatures,OnEngineUnload,NativeSaleCells,NativeRunUI
 local InventorySaleReservation={}
 local NativeReceipts={profileRevision=0}
 local SaleReadiness=(function()
@@ -2739,7 +2739,7 @@ local function sidebarLibrary(library)
             options.name="AIOS HUB"
             options.showName="A"
             options.showIconOnly=true
-            options.subtitle="v0.19 · Made by Ilham Ziqri"
+            options.subtitle="v0.20 · Made by Ilham Ziqri"
             options.theme=AiosPresentation.Theme
             options.locale="en"
             options.Locale="en"
@@ -2766,6 +2766,7 @@ local function featureClosure(prototype, upvalues)
         -- The old touch fitter otherwise overwrites the presentation sizer
         -- after CreateWindow, restoring its 520x380 mobile cap.
         if prototype.id==158 then return end
+        if prototype.id==135 and NativeRunUI and NativeRunUI.ContinueBossChest()then return true end
         if prototype.id==139 and RepeatAct.Step(upvalues)then return end
         if prototype.id==122 and RepeatAct.Step({[1]=upvalues[5],[2]=upvalues[8],[5]=upvalues[6],[9]=upvalues[10]})then return end
         if prototype.id==123 and RepeatAct.OwnsLobby()then return end
@@ -2796,6 +2797,8 @@ local function featureClosure(prototype, upvalues)
             local kind,data=...
             if kind=="Profile"and type(data)=="table"then
                 NativeReceipts.profileRevision=NativeReceipts.profileRevision+1
+            elseif kind=="BossChestLoot"and NativeRunUI then
+                NativeRunUI.NoteBossChestLoot()
             elseif kind=="Toast"then
                 local message=type(data)=="table"and(data.text or data.message)or data
                 if type(message)=="string"then NativeReceipts.toast=message:sub(1,350);NativeReceipts.toastAt=os.clock()end
@@ -2849,7 +2852,7 @@ local context = {
 local cells = {{function()return true end},{""},{context},{false},{math.huge},{""},{true},{math.huge}}
 l1IIIl1l1(_yyshygnqr[25],cells)
 assert(NativeWindow and NativeControl,"Aios: the feature interface is not ready.")
-local NativeRunUI=(function()
+NativeRunUI=(function()
 -- Use the game's actual visible return controls; never guess a server command.
 return function(player,window)
     local ui={snapshot=nil,at=-math.huge}
@@ -2940,6 +2943,51 @@ return function(player,window)
             if found then pin.node=found;return found end
         end
     end
+    local function chestContinue(snapshot)
+        local receipt=ui.chestLootAt and os.clock()-ui.chestLootAt<=30
+        for _,entry in ipairs(snapshot.buttons)do
+            local isContinue=false
+            for _,label in ipairs(entry.labels)do
+                local compact=label:gsub(" ","")
+                if label=="CONTINUE"or compact=="CHESTCONTINUE"or compact=="BOSSCHESTCONTINUE"or compact=="CONTINUEBUTTON"then isContinue=true end
+            end
+            local blocked=false
+            local ancestor=isContinue and entry.node.Parent or nil
+            while ancestor do
+                local name=normalize(ancestor.Name):gsub(" ","")
+                if name:find("SHOP",1,true)or name:find("PURCHASE",1,true)or name:find("MARKET",1,true)or name:find("GIFT",1,true)then blocked=true;break end
+                if ancestor:IsA("ScreenGui")then break end
+                ancestor=ancestor.Parent
+            end
+            if isContinue and not blocked and visible(entry.node)then
+                local parent=entry.node.Parent
+                for _=1,5 do
+                    if not parent then break end
+                    local name=normalize(parent.Name):gsub(" ","")
+                    if name:find("SHOP",1,true)or name:find("PURCHASE",1,true)or name:find("MARKET",1,true)or name:find("GIFT",1,true)then break end
+                    if name:find("BOSSCHEST",1,true)or name:find("CHESTLOOT",1,true)or name:find("CHESTREWARD",1,true)
+                        or name:find("RUNCHEST",1,true)or name:find("BOSSLOOT",1,true)or receipt and name:find("CHEST",1,true)then return entry.node end
+                    if parent:IsA("ScreenGui")then break end
+                    local buttons,strong,loot=0,false,false
+                    for _,node in ipairs(parent:GetDescendants())do
+                        if visible(node)then
+                            if node:IsA("GuiButton")then buttons=buttons+1 end
+                            if node:IsA("TextLabel")then
+                                local text=normalize(node.Text)
+                                if text:find("BOSS CHEST",1,true)or text:find("CHEST LOOT",1,true)or text:find("CHEST REWARDS",1,true)then strong=true end
+                                if text=="LOOT"or text=="REWARDS"or text=="REWARDS RECEIVED"then loot=true end
+                            end
+                        end
+                    end
+                    -- Do not borrow chest text from a different panel in the
+                    -- whole adventure screen to approve an unrelated Continue.
+                    if buttons>4 then break end
+                    if strong or receipt and loot then return entry.node end
+                    parent=parent.Parent
+                end
+            end
+        end
+    end
     local function click(button)
         if not visible(button)then return false end
         local supported,interactable=pcall(function()return button.Interactable end)
@@ -2988,6 +3036,7 @@ return function(player,window)
     function ui.IsCastle()
         local snapshot=scan()
         local flag=ui.InRun()
+        if chestContinue(snapshot)then return false end
         if ui.homeFlow and not ui.homeFlow.castleRequested then return false end
         if flag==true or flag~=false and not snapshot.castle or snapshot.returnPrompt or snapshot.returnedHome then return false end
         for _,entry in ipairs(snapshot.buttons)do
@@ -2999,6 +3048,7 @@ return function(player,window)
         return true
     end
     function ui.ReturnToCastle()
+        if chestContinue(scan())then return false end
         for _,entry in ipairs(scan().buttons)do
             for _,label in ipairs(entry.labels)do
                 if returnLabel(label)or entry.runContext and(label=="RETREAT"or label=="CASTLE"or label=="TOWN"or label=="LEAVE ADVENTURE")then
@@ -3012,6 +3062,7 @@ return function(player,window)
     end
     function ui.ReturnHome()
         local snapshot=scan()
+        if chestContinue(snapshot)then return false end
         -- The result panel leaves Return Home visible behind it. Never press
         -- that underlying button once Return to Castle is available.
         if snapshot.returnedHome then return false end
@@ -3071,6 +3122,7 @@ return function(player,window)
     end
     function ui.ReturnStage()
         local snapshot=scan()
+        if chestContinue(snapshot)then return"loot"end
         -- Destination/result controls take precedence over the still-visible
         -- run sidebar. A successful click alone is never treated as arrival.
         if confirmation(snapshot)then return"confirm"end
@@ -3084,6 +3136,33 @@ return function(player,window)
             if visible(entry.node)then for _,label in ipairs(entry.labels)do if homeLabel(label)then return"home"end end end
         end
     end
+    function ui.NoteBossChestLoot()
+        ui.chestLootAt=os.clock();ui.snapshot=nil
+    end
+    function ui.ContinueBossChest()
+        local button=chestContinue(scan())
+        if not button then
+            if ui.chestTrack then ui.chestLootAt=nil end
+            ui.chestTrack=nil;return false
+        end
+        local now=os.clock()
+        local supported,interactable=pcall(function()return button.Interactable end)
+        if supported and interactable==false then
+            -- Before the loot receipt, keep the original ChestHit opener running.
+            -- A disabled placeholder must not prevent opening the chest itself.
+            return ui.chestLootAt~=nil and now-ui.chestLootAt<=30
+        end
+        local track=ui.chestTrack
+        if not track or track.button~=button then
+            track={button=button,nextAt=now+.4,attempts=0};ui.chestTrack=track
+        end
+        -- A visible, enabled Continue means the native reward reveal is ready.
+        -- Hold the route tick while the loot panel remains on screen.
+        if now<track.nextAt or track.attempts>=3 then return true end
+        track.nextAt=now+2;track.attempts=track.attempts+1
+        click(button)
+        return true
+    end
     return ui
 end
 
@@ -3096,7 +3175,7 @@ task.spawn(function()
         task.wait(.35)
     end
 end)
-local API = {Version="0.19.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
+local API = {Version="0.20.0",Window=NativeWindow,Source="User-supplied CinderHub Pixel Lineage feature engine"}
 API.InventoryHost=(function()
 -- Shares the existing native sale state and RPGCommand captured by prototype 75.
 -- No guessed remote names, local bag edits, or separate automatic sale loop.
